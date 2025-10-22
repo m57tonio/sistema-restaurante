@@ -145,6 +145,15 @@ $(document).ready(function() {
 
     // Teclas rápidas
     $(document).on('keydown', function(e) {
+        // No capturar atajos si el foco está en un campo editable
+        const target = e.target;
+        const isEditable = (
+            target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.isContentEditable ||
+            (target.classList && target.classList.contains('swal2-input'))
+        );
+        if (isEditable) return; // permitir copiar/pegar y escribir con normalidad
         if (e.ctrlKey || e.metaKey) {
             switch(e.key.toLowerCase()) {
                 case 'b': // Ctrl/Cmd + B para buscar producto

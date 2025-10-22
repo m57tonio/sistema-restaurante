@@ -100,18 +100,30 @@
 
     <div class="container">
         <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <div>
-                    <i class="bi bi-receipt me-2"></i>
-                    Historial de Ventas
-                </div>
-                <div class="d-flex gap-2">
-                    <input type="date" id="fechaDesde" class="form-control date-filter">
-                    <input type="date" id="fechaHasta" class="form-control date-filter">
-                    <button class="btn btn-primary" id="filtrarVentas">
-                        <i class="bi bi-search me-1"></i>
-                        Filtrar
-                    </button>
+            <div class="card-header">
+                <div class="row g-2 align-items-center">
+                    <div class="col-md-3">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-calendar3"></i></span>
+                            <input type="date" id="fechaDesde" class="form-control" placeholder="Desde">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-calendar3"></i></span>
+                            <input type="date" id="fechaHasta" class="form-control" placeholder="Hasta">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" id="buscarVentas" class="form-control" placeholder="Buscar por cliente o # factura">
+                        </div>
+                    </div>
+                    <div class="col-md-3 d-flex justify-content-end gap-2">
+                        <button class="btn btn-primary" id="filtrarVentas"><i class="bi bi-funnel"></i> Filtrar</button>
+                        <button class="btn btn-success" id="exportarVentas"><i class="bi bi-file-earmark-excel"></i> Exportar</button>
+                    </div>
                 </div>
             </div>
             <div class="card-body">
@@ -154,8 +166,18 @@
                         </tbody>
                         <tfoot class="table-light fw-bold">
                             <tr>
-                                <td colspan="4" class="text-end">Total General:</td>
-                                <td class="text-end" id="totalGeneral">$0.00</td>
+                                <td colspan="3" class="text-end">Total Efectivo:</td>
+                                <td colspan="2" class="text-end" id="totalEfectivo">$0.00</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td colspan="3" class="text-end">Total Transferencia:</td>
+                                <td colspan="2" class="text-end" id="totalTransferencia">$0.00</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td colspan="3" class="text-end">Total General:</td>
+                                <td colspan="2" class="text-end" id="totalGeneral">$0.00</td>
                                 <td></td>
                             </tr>
                         </tfoot>
@@ -317,38 +339,65 @@
         document.getElementById('filtrarVentas').addEventListener('click', function() {
             const desde = document.getElementById('fechaDesde').value;
             const hasta = document.getElementById('fechaHasta').value;
-            
+            const q = document.getElementById('buscarVentas').value || '';
             if (!desde || !hasta) {
                 mostrarAlerta('Por favor seleccione ambas fechas', 'warning');
                 return;
             }
-
-            window.location.href = `/ventas?desde=${desde}&hasta=${hasta}`;
+            const params = new URLSearchParams({ desde, hasta, q });
+            window.location.href = `/ventas?${params.toString()}`;
         });
 
-        // Establecer fechas actuales si no hay filtros
-        if (!new URLSearchParams(window.location.search).has('desde')) {
-            const hoy = new Date();
-            const hace30Dias = new Date();
-            hace30Dias.setDate(hace30Dias.getDate() - 30);
-            
-            document.getElementById('fechaDesde').value = hace30Dias.toISOString().split('T')[0];
-            document.getElementById('fechaHasta').value = hoy.toISOString().split('T')[0];
-        }
+        document.getElementById('exportarVentas').addEventListener('click', function(){
+            const desde = document.getElementById('fechaDesde').value;
+            const hasta = document.getElementById('fechaHasta').value;
+            const q = document.getElementById('buscarVentas').value || '';
+            const params = new URLSearchParams();
+            if (desde && hasta) { params.set('desde', desde); params.set('hasta', hasta); }
+            if (q) params.set('q', q);
+            window.open(`/ventas/export?${params.toString()}`, '_blank');
+        });
+
+        // Establecer valores iniciales desde la URL o defaults
+        (function initFiltrosDesdeURL(){
+            const p = new URLSearchParams(window.location.search);
+            const desde = p.get('desde');
+            const hasta = p.get('hasta');
+            const q = p.get('q') || '';
+            if (desde) document.getElementById('fechaDesde').value = desde;
+            if (hasta) document.getElementById('fechaHasta').value = hasta;
+            if (q) document.getElementById('buscarVentas').value = q;
+            if (!desde || !hasta) {
+                const hoy = new Date();
+                const hace30Dias = new Date();
+                hace30Dias.setDate(hace30Dias.getDate() - 30);
+                document.getElementById('fechaDesde').value = document.getElementById('fechaDesde').value || hace30Dias.toISOString().split('T')[0];
+                document.getElementById('fechaHasta').value = document.getElementById('fechaHasta').value || hoy.toISOString().split('T')[0];
+            }
+        })();
 
         // Inicializar tooltips
         const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
         const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
 
         // Función para calcular el total general
-        function calcularTotalGeneral() {
-            const totales = document.querySelectorAll('[data-total]');
-            const total = Array.from(totales).reduce((sum, el) => sum + Number(el.dataset.total), 0);
+        function calcularTotales() {
+            const totales = document.querySelectorAll('tbody#ventasTabla td[data-total]');
+            let total = 0, tef = 0, ttr = 0;
+            document.querySelectorAll('#ventasTabla tr').forEach(tr => {
+                const totalEl = tr.querySelector('[data-total]');
+                const forma = tr.children[3]?.innerText?.trim().toLowerCase();
+                const val = Number(totalEl?.dataset.total||0);
+                total += val;
+                if (forma === 'efectivo') tef += val; else if (forma === 'transferencia') ttr += val;
+            });
             document.getElementById('totalGeneral').textContent = `$${total.toFixed(2)}`;
+            document.getElementById('totalEfectivo').textContent = `$${tef.toFixed(2)}`;
+            document.getElementById('totalTransferencia').textContent = `$${ttr.toFixed(2)}`;
         }
 
         // Calcular total al cargar la página
-        calcularTotalGeneral();
+        calcularTotales();
 
         // Manejador para reimprimir facturas y ver detalles
         document.querySelectorAll('.btn-reimprimir').forEach(button => {

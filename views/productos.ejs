@@ -61,10 +61,19 @@
                     <i class="bi bi-box-fill me-2"></i>
                     Gestión de Productos
                 </div>
-                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#nuevoProductoModal">
-                    <i class="bi bi-plus-lg me-1"></i>
-                    Nuevo Producto
-                </button>
+                <div class="btn-group">
+                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#nuevoProductoModal">
+                        <i class="bi bi-plus-lg me-1"></i>
+                        Nuevo Producto
+                    </button>
+                    <button id="btnDescargarPlantilla" class="btn btn-outline-success">
+                        <i class="bi bi-file-earmark-excel"></i> Plantilla Excel
+                    </button>
+                    <button id="btnImportarProductos" class="btn btn-outline-primary">
+                        <i class="bi bi-upload"></i> Importar Excel
+                    </button>
+                    <input type="file" id="archivoImport" accept=".xlsx" class="d-none">
+                </div>
             </div>
             <div class="card-body">
                 <div class="row mb-4">
@@ -196,6 +205,30 @@
                     eliminarProducto(id);
                 }
             }
+        });
+
+        // Descargar plantilla
+        document.getElementById('btnDescargarPlantilla').addEventListener('click', function(){
+            window.open('/api/productos/plantilla','_blank');
+        });
+
+        // Importar productos
+        const input = document.getElementById('archivoImport');
+        document.getElementById('btnImportarProductos').addEventListener('click', ()=> input.click());
+        input.addEventListener('change', async function(){
+            if (!this.files.length) return;
+            const fd = new FormData();
+            fd.append('archivo', this.files[0]);
+            const btn = document.getElementById('btnImportarProductos');
+            btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Importando...';
+            try{
+                const resp = await fetch('/api/productos/importar', { method:'POST', body: fd });
+                const data = await resp.json();
+                if(!resp.ok) throw new Error(data.error||'Error al importar');
+                alert('Importación completa: ' + data.inserted + ' filas.');
+                location.reload();
+            }catch(err){ alert(err.message); }
+            finally{ btn.disabled=false; btn.innerHTML = '<i class="bi bi-upload"></i> Importar Excel'; this.value=''; }
         });
     });
     </script>
