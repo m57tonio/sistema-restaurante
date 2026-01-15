@@ -6,8 +6,7 @@ public/uploads/
 .cu
 dist.zip
 # Archivos de entorno
-.env
-.env.*
+.cursorrules
 
 # Logs
 npm-debug.log*

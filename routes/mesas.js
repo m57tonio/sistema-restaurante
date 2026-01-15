@@ -63,6 +63,65 @@ router.post('/crear', async (req, res) => {
     }
 });
 
+// PUT /mesas/:mesaId - API: editar mesa (numero/descripcion/estado)
+router.put('/:mesaId', async (req, res) => {
+    try {
+        const mesaId = req.params.mesaId;
+        const { numero, descripcion, estado } = req.body || {};
+
+        if (!numero) return res.status(400).json({ error: 'El número de mesa es requerido' });
+
+        const estadosPermitidos = ['libre', 'ocupada', 'reservada', 'bloqueada'];
+        if (estado && !estadosPermitidos.includes(estado)) {
+            return res.status(400).json({ error: 'Estado inválido' });
+        }
+
+        // Validar existencia
+        const [actual] = await db.query('SELECT id FROM mesas WHERE id = ?', [mesaId]);
+        if (actual.length === 0) return res.status(404).json({ error: 'Mesa no encontrada' });
+
+        // Validar número único
+        const [duplicada] = await db.query('SELECT id FROM mesas WHERE numero = ? AND id <> ?', [String(numero), mesaId]);
+        if (duplicada.length > 0) {
+            return res.status(409).json({ error: 'Ya existe una mesa con ese número' });
+        }
+
+        await db.query(
+            'UPDATE mesas SET numero = ?, descripcion = ?, estado = COALESCE(?, estado) WHERE id = ?',
+            [String(numero), descripcion || null, estado || null, mesaId]
+        );
+
+        res.json({ message: 'Mesa actualizada' });
+    } catch (error) {
+        console.error('Error al editar mesa:', error);
+        res.status(500).json({ error: 'Error al editar mesa' });
+    }
+});
+
+// DELETE /mesas/:mesaId - API: eliminar mesa (solo si no tiene pedidos asociados)
+router.delete('/:mesaId', async (req, res) => {
+    try {
+        const mesaId = req.params.mesaId;
+
+        const [existe] = await db.query('SELECT id FROM mesas WHERE id = ?', [mesaId]);
+        if (existe.length === 0) return res.status(404).json({ error: 'Mesa no encontrada' });
+
+        const [pedidos] = await db.query('SELECT COUNT(*) AS cnt FROM pedidos WHERE mesa_id = ?', [mesaId]);
+        const cnt = Number(pedidos?.[0]?.cnt || 0);
+        if (cnt > 0) {
+            return res.status(400).json({ error: 'No se puede eliminar: la mesa tiene pedidos asociados' });
+        }
+
+        const [result] = await db.query('DELETE FROM mesas WHERE id = ?', [mesaId]);
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'Mesa no encontrada' });
+
+        res.json({ message: 'Mesa eliminada' });
+    } catch (error) {
+        console.error('Error al eliminar mesa:', error);
+        res.status(500).json({ error: 'Error al eliminar mesa' });
+    }
+});
+
 // POST /mesas/abrir - API: abre (o recupera) pedido abierto para una mesa
 router.post('/abrir', async (req, res) => {
     const { mesa_id, cliente_id, notas } = req.body || {};

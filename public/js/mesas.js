@@ -6,6 +6,11 @@ $(function() {
   let pedidoActual = null; // { id, mesa_id }
   let items = []; // items del pedido en UI
 
+  // Tooltips Bootstrap
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+    try { new bootstrap.Tooltip(el); } catch (_) { /* noop */ }
+  });
+
   // Helpers UI
   function formatear(valor){return `$${Number(valor||0).toLocaleString('es-CO')}`}
   function renderItems(){
@@ -527,6 +532,139 @@ $(function() {
     const resp = await fetch('/api/mesas/crear', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ numero, descripcion }) });
     if(!resp.ok){ const err = await resp.json(); return Swal.fire({icon:'error', title: err.error||'Error'}); }
     Swal.fire({icon:'success', title:'Mesa creada'}).then(()=> location.reload());
+  });
+
+  function escapeHtml(s){
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // Editar mesa
+  $('#gridMesas').on('click', '.btnEditarMesa', async function(e){
+    e.preventDefault();
+    const card = $(this).closest('.card')[0];
+    if(!card) return;
+
+    const mesaId = card.getAttribute('data-mesa-id');
+    const numeroActual = card.dataset.mesaNumero || '';
+    const descripcionActual = card.dataset.mesaDescripcion || '';
+    const estadoActual = card.dataset.mesaEstado || 'libre';
+
+    const result = await Swal.fire({
+      title: 'Editar mesa',
+      html: `
+        <div class="text-start">
+          <label class="form-label small">Número</label>
+          <input id="editMesaNumero" class="form-control mb-2" value="${escapeHtml(numeroActual)}" />
+          <label class="form-label small">Descripción</label>
+          <input id="editMesaDescripcion" class="form-control mb-2" value="${escapeHtml(descripcionActual)}" />
+          <label class="form-label small">Estado</label>
+          <select id="editMesaEstado" class="form-select">
+            <option value="libre">libre</option>
+            <option value="ocupada">ocupada</option>
+            <option value="reservada">reservada</option>
+            <option value="bloqueada">bloqueada</option>
+          </select>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Guardar',
+      didOpen: () => {
+        const sel = document.getElementById('editMesaEstado');
+        if(sel) sel.value = estadoActual;
+        ['editMesaNumero','editMesaDescripcion'].forEach(id => {
+          const el = document.getElementById(id);
+          if(!el) return;
+          ['keydown','keyup','keypress','paste','copy','cut','contextmenu'].forEach(evt => {
+            el.addEventListener(evt, (ev) => ev.stopPropagation());
+          });
+        });
+      },
+      preConfirm: () => {
+        const numero = (document.getElementById('editMesaNumero').value || '').trim();
+        const descripcion = (document.getElementById('editMesaDescripcion').value || '').trim();
+        const estado = (document.getElementById('editMesaEstado').value || '').trim();
+        if(!numero){
+          Swal.showValidationMessage('El número es requerido');
+          return false;
+        }
+        return { numero, descripcion, estado };
+      }
+    });
+
+    if(!result.isConfirmed) return;
+    try{
+      const resp = await fetch(`/api/mesas/${mesaId}`, {
+        method:'PUT',
+        headers:{'Content-Type':'application/json', 'Accept':'application/json'},
+        body: JSON.stringify(result.value)
+      });
+      const contentType = resp.headers.get('content-type') || '';
+      const data = contentType.includes('application/json') ? await resp.json() : { error: await resp.text() };
+      if(!resp.ok) throw new Error(data.error || 'Error al editar mesa');
+
+      // Actualizar UI en la tarjeta
+      card.dataset.mesaNumero = result.value.numero;
+      card.dataset.mesaDescripcion = result.value.descripcion || '';
+      card.dataset.mesaEstado = result.value.estado;
+
+      const title = card.querySelector('.card-title');
+      if(title) title.textContent = `Mesa ${result.value.numero}`;
+      const desc = card.querySelector('p.text-muted');
+      if(desc) desc.textContent = result.value.descripcion || '';
+
+      const badge = card.querySelector('.estado-badge');
+      if(badge){
+        badge.textContent = result.value.estado;
+        badge.classList.remove('bg-success','bg-warning','bg-secondary');
+        badge.classList.add(result.value.estado === 'libre' ? 'bg-success' : (result.value.estado === 'ocupada' ? 'bg-warning' : 'bg-secondary'));
+      }
+
+      Swal.fire({ icon:'success', title:'Mesa actualizada' });
+    }catch(err){
+      Swal.fire({ icon:'error', title: err.message || 'No se pudo editar la mesa' });
+    }
+  });
+
+  // Eliminar mesa
+  $('#gridMesas').on('click', '.btnEliminarMesa', async function(e){
+    e.preventDefault();
+    const btn = this;
+    if(btn.hasAttribute('disabled')) return;
+    const card = $(btn).closest('.card')[0];
+    if(!card) return;
+    const mesaId = card.getAttribute('data-mesa-id');
+    const numero = card.dataset.mesaNumero || card.querySelector('.card-title')?.textContent?.replace('Mesa ','') || '';
+
+    const confirmacion = await Swal.fire({
+      title: `¿Eliminar mesa ${numero}?`,
+      text: 'Esta acción no se puede deshacer.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Sí, eliminar',
+      cancelButtonText: 'Cancelar'
+    });
+    if(!confirmacion.isConfirmed) return;
+
+    try{
+      const resp = await fetch(`/api/mesas/${mesaId}`, { method:'DELETE', headers:{ 'Accept':'application/json' } });
+      const contentType = resp.headers.get('content-type') || '';
+      const data = contentType.includes('application/json') ? await resp.json() : { error: await resp.text() };
+      if(!resp.ok) throw new Error(data.error || 'Error al eliminar mesa');
+
+      // Quitar tarjeta del grid
+      const wrapper = $(card).closest('.col-6');
+      if(wrapper.length) wrapper.remove();
+      else $(card).remove();
+
+      Swal.fire({ icon:'success', title:'Mesa eliminada' });
+    }catch(err){
+      Swal.fire({ icon:'error', title: err.message || 'No se pudo eliminar la mesa' });
+    }
   });
 });
 

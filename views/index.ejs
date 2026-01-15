@@ -9,6 +9,8 @@
     <link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <style>
+        html, body { height: 100%; }
+        body { min-height: 100vh; display: flex; flex-direction: column; }
         body {
             background-color: #f8f9fa;
             font-size: 16px;
@@ -113,63 +115,12 @@
         .btn {
             font-size: 1.1rem;
         }
-        /* Estilos para el footer */
-        footer {
-            border-top: 1px solid rgba(255,255,255,0.1);
-            position: relative;
-            margin-top: 5rem;
-        }
-        footer .btn {
-            transition: all 0.3s ease;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-            font-weight: 500;
-            padding: 0.5rem 1rem;
-            border-radius: 50px;
-            min-width: 140px;
-        }
-        footer .btn:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-        }
-        footer .btn i {
-            margin-right: 5px;
-            font-size: 1.1rem;
-        }
-        @media (max-width: 767.98px) {
-            footer .btn {
-                width: 80%;
-                margin: 0.25rem auto;
-            }
-        }
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark mb-4">
-        <div class="container">
-            <a class="navbar-brand" href="/">Sistema de Facturación</a>
-            <div class="d-flex">
-                <a href="/mesas" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Mesas">
-                    <i class="bi bi-grid"></i>
-                </a>
-                <a href="/cocina" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Cocina">
-                    <i class="bi bi-egg-fried"></i>
-                </a>
-                <a href="/ventas" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Historial de Ventas">
-                    <i class="bi bi-receipt"></i>
-                </a>
-                <a href="/productos" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Gestionar Productos">
-                    <i class="bi bi-box"></i>
-                </a>
-                <a href="/clientes" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Gestionar Clientes">
-                    <i class="bi bi-people"></i>
-                </a>
-                <a href="/configuracion" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Configuración">
-                    <i class="bi bi-gear"></i>
-                </a>
-            </div>
-        </div>
-    </nav>
+    <%- include('partials/navbar') %>
 
+    <main class="flex-grow-1">
     <div class="container">
         <!-- Información del Cliente -->
         <div class="card">
@@ -307,39 +258,9 @@
             </button>
         </div>
     </div>
+    </main>
 
-    <!-- Footer -->
-    <footer class="mt-5 py-3 bg-dark text-white">
-        <div class="container">
-            <div class="row justify-content-center align-items-center g-3">
-                <div class="col-12 col-md-auto text-center">
-                    <a href="https://www.youtube.com/@Ciscodedev" target="_blank" class="btn btn-danger mx-1 mb-2 mb-md-0">
-                        <i class="bi bi-youtube"></i> Suscríbete
-                    </a>
-                </div>
-                <div class="col-12 col-md-auto text-center">
-                    <a href="https://wa.me/573006957308" target="_blank" class="btn btn-success mx-1 mb-2 mb-md-0">
-                        <i class="bi bi-whatsapp"></i> WhatsApp
-                    </a>
-                </div>
-                <div class="col-12 col-md-auto text-center">
-                    <a href="https://www.paypal.com/donate/?hosted_button_id=8HMKJZY4E29RY" target="_blank" class="btn btn-info text-white mx-1 mb-2 mb-md-0">
-                        <i class="bi bi-cash-coin"></i> Donaciones
-                    </a>
-                </div>
-                <div class="col-12 col-md-auto text-center">
-                    <a href="https://ciscodedev.netlify.app/" target="_blank" class="btn btn-primary mx-1">
-                        <i class="bi bi-person-badge"></i> Creado por Ciscode
-                    </a>
-                </div>
-            </div>
-            <div class="row mt-4">
-                <div class="col-12 text-center">
-                    <p class="mb-0 text-white-50">&copy; <%= new Date().getFullYear() %> <span class="fw-bold text-white">Ciscode</span> - Todos los derechos reservados</p>
-                </div>
-            </div>
-        </div>
-    </footer>
+    <%- include('partials/footer') %>
 
     <!-- Modal Nuevo Cliente -->
     <div class="modal fade" id="nuevoClienteModal" tabindex="-1">
