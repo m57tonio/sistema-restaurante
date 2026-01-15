@@ -30,6 +30,7 @@
     "mysql2": "^3.14.2"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22"
+    "nodemon": "^2.0.22",
+    "pkg": "^5.8.1"
   }
 }
