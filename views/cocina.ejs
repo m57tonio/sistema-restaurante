@@ -74,10 +74,30 @@
                 <input id="buscarCocina" class="form-control" placeholder="Buscar por mesa, producto o nota...">
               </div>
             </div>
-            <div class="col-12 col-md-6 d-flex justify-content-md-end gap-2">
+            <div class="col-12 col-md-6 d-flex justify-content-md-end gap-2 flex-wrap">
               <span class="badge text-bg-primary kpi-badge">Enviados: <span id="countEnviados">0</span></span>
               <span class="badge text-bg-warning kpi-badge">Preparando: <span id="countPreparando">0</span></span>
               <span class="badge text-bg-success kpi-badge">Listos: <span id="countListos">0</span></span>
+            </div>
+          </div>
+          <!-- Filtros de Entregados (por defecto hoy) -->
+          <!-- Relacionado con: public/js/cocina.js (GET /api/cocina/entregados?desde&hasta) -->
+          <div class="row g-2 align-items-end mt-2">
+            <div class="col-12 col-md-3">
+              <label class="form-label small mb-1">Desde</label>
+              <input type="date" id="entDesde" class="form-control form-control-sm">
+            </div>
+            <div class="col-12 col-md-3">
+              <label class="form-label small mb-1">Hasta</label>
+              <input type="date" id="entHasta" class="form-control form-control-sm">
+            </div>
+            <div class="col-12 col-md-3">
+              <button id="btnFiltrarEntregados" class="btn btn-outline-secondary btn-sm w-100" type="button">
+                <i class="bi bi-funnel me-1"></i>Filtrar entregados
+              </button>
+            </div>
+            <div class="col-12 col-md-3 small text-muted">
+              Predeterminado: <strong>hoy</strong>
             </div>
           </div>
         </div>
@@ -96,6 +116,18 @@
           <li class="nav-item" role="presentation">
             <button class="nav-link" id="tabListos-tab" data-bs-toggle="tab" data-bs-target="#tabListos" type="button" role="tab" aria-controls="tabListos" aria-selected="false">
               <i class="bi bi-check2-circle me-1"></i>Listos <span class="badge text-bg-light ms-1" id="pillListos">0</span>
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tabEntregados-tab" data-bs-toggle="tab" data-bs-target="#tabEntregados" type="button" role="tab" aria-controls="tabEntregados" aria-selected="false">
+              <i class="bi bi-box-seam me-1"></i>Entregados <span class="badge text-bg-light ms-1" id="pillEntregados">0</span>
+            </button>
+          </li>
+          <!-- Pestaña Rechazados: visualizar pedidos/items cancelados (estado='rechazado') -->
+          <!-- Relacionado con: routes/cocina.js (GET /api/cocina/rechazados) y public/js/cocina.js -->
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tabRechazados-tab" data-bs-toggle="tab" data-bs-target="#tabRechazados" type="button" role="tab" aria-controls="tabRechazados" aria-selected="false">
+              <i class="bi bi-x-octagon me-1"></i>Rechazados <span class="badge text-bg-light ms-1" id="pillRechazados">0</span>
             </button>
           </li>
         </ul>
@@ -119,6 +151,18 @@
               <i class="bi bi-inbox me-1"></i>No hay pedidos listos para entregar.
             </div>
           </div>
+          <div class="tab-pane fade" id="tabEntregados" role="tabpanel" aria-labelledby="tabEntregados-tab" tabindex="0">
+            <div id="listaEntregados" class="vstack gap-2"></div>
+            <div id="emptyEntregados" class="empty-state mt-2 d-none">
+              <i class="bi bi-inbox me-1"></i>No hay pedidos entregados en el rango seleccionado.
+            </div>
+          </div>
+          <div class="tab-pane fade" id="tabRechazados" role="tabpanel" aria-labelledby="tabRechazados-tab" tabindex="0">
+            <div id="listaRechazados" class="vstack gap-2"></div>
+            <div id="emptyRechazados" class="empty-state mt-2 d-none">
+              <i class="bi bi-inbox me-1"></i>No hay pedidos rechazados en el rango seleccionado.
+            </div>
+          </div>
         </div>
     </div>
     </main>
@@ -127,9 +171,14 @@
 
     <script src="/vendor/jquery/jquery.min.js"></script>
     <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <!-- SweetAlert2 (confirmaciones). Relacionado con: public/js/cocina.js (cancelar item) -->
+    <script src="/vendor/sweetalert2/sweetalert2.all.min.js"></script>
     <script>
       // Render inicial (evita “pantalla vacía” mientras carga el fetch)
       window.__COCINA_ITEMS__ = <%- JSON.stringify(items || []) %>;
+      // Rol del usuario (para esconder acciones en UI cuando es mesero)
+      // Relacionado con: public/js/cocina.js y middleware/auth.js (res.locals.user)
+      window.__USER_ROLE__ = <%- JSON.stringify((typeof user !== 'undefined' && user && user.rol) ? user.rol : '') %>;
     </script>
     <script src="/js/cocina.js"></script>
 </body>

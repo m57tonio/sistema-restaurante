@@ -100,6 +100,15 @@
                                     <td class="text-end">$<%= (Number(producto.precio_libra) || 0).toFixed(2) %></td>
                                     <td class="text-center">
                                         <div class="action-buttons">
+                                            <!-- Gestión de productos hijos (Padre -> Hijos) -->
+                                            <!-- Relacionado con: database.sql (producto_hijos), routes/productos.js (/:padreId/hijos), public/js/productos.js -->
+                                            <button class="btn btn-sm btn-outline-secondary me-1"
+                                                    data-id="<%= producto.id %>"
+                                                    data-nombre="<%= producto.nombre %>"
+                                                    data-action="hijos"
+                                                    title="Gestionar hijos (combo/variantes)">
+                                                <i class="bi bi-diagram-3"></i>
+                                            </button>
                                             <button class="btn btn-sm btn-outline-primary me-1" 
                                                     data-id="<%= producto.id %>" 
                                                     data-action="editar">
@@ -177,6 +186,64 @@
         </div>
     </div>
 
+    <!-- Modal Gestión de Hijos (Padre -> Hijos) -->
+    <!-- Permite configurar qué productos se pueden elegir como "hijos" al montar el pedido del producto padre -->
+    <!-- Relacionado con: routes/productos.js (GET/POST/DELETE /api/productos/:padreId/hijos) y public/js/mesas.js (guarda selección en pedido_items.nota) -->
+    <div class="modal fade" id="hijosProductoModal" tabindex="-1" aria-labelledby="hijosProductoModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="hijosProductoModalLabel">
+                        <i class="bi bi-diagram-3 me-2"></i>
+                        Hijos de: <span id="hijosPadreNombre" class="fw-semibold"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="hijosPadreId" value="">
+
+                    <div class="alert alert-info py-2 small mb-3">
+                        Los hijos son <strong>opciones/descripción</strong> del producto padre. <strong>No cambian el precio</strong> del padre.
+                        Al montar el pedido, la selección se guarda en <code>pedido_items.nota</code> para que llegue a cocina.
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-12 col-lg-6">
+                            <div class="mb-2">
+                                <label class="form-label fw-semibold mb-1">Agregar ítem</label>
+                                <!-- Hijos como "items" de texto (NO son productos) -->
+                                <!-- Relacionado con: routes/productos.js (/:padreId/hijos-items) y public/js/productos.js (agregar/quitar items) -->
+                                <div class="input-group mb-2">
+                                    <span class="input-group-text"><i class="bi bi-plus-lg"></i></span>
+                                    <input id="nuevoItemHijoNombre" type="text" class="form-control" placeholder="Ej: Goulash de cerdo, Crema, Ensalada...">
+                                    <button id="btnAgregarItemHijo" class="btn btn-primary" type="button">
+                                        Agregar ítem
+                                    </button>
+                                </div>
+                                <div class="form-text mb-2">
+                                    Puedes agregar varios separados por <strong>,</strong> (coma). Ej: <strong>Goulash, Crema</strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-12 col-lg-6">
+                            <label class="form-label fw-semibold mb-1">Ítems configurados</label>
+                            <!-- Lista de items hijos (texto) -->
+                            <!-- Relacionado con: database.sql -> producto_hijos_items -->
+                            <div id="listaItemsHijosConfigurados" class="list-group mb-2"></div>
+                            <div id="emptyItemsHijosConfigurados" class="text-muted small mt-2 d-none">
+                                Aún no hay ítems hijos configurados para este producto.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <%- include('partials/footer') %>
 
     <script src="/vendor/jquery/jquery.min.js"></script>
@@ -194,6 +261,15 @@
 
             if (action === 'editar') {
                 editarProducto(id);
+            } else if (action === 'hijos') {
+                // Gestión de hijos: usa función global definida en /js/productos.js
+                // Relacionado con: routes/productos.js (/:padreId/hijos)
+                const nombre = button.dataset.nombre || '';
+                if (typeof gestionarHijosProducto === 'function') {
+                    gestionarHijosProducto(id, nombre);
+                } else {
+                    alert('No se pudo abrir la gestión de hijos (función no encontrada).');
+                }
             } else if (action === 'eliminar') {
                 if (confirm('¿Está seguro de que desea eliminar este producto?')) {
                     eliminarProducto(id);

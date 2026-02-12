@@ -131,6 +131,12 @@
     <script src="/vendor/jquery/jquery.min.js"></script>
     <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
     <script src="/vendor/sweetalert2/sweetalert2.all.min.js"></script>
+    <script>
+      // Rol del usuario (para restringir opciones en UI)
+      // - Mesero: al facturar NO debe poder crear nuevos clientes (requisito solicitado)
+      // Relacionado con: public/js/mesas.js (selección de cliente) y middleware/auth.js (res.locals.user)
+      window.__USER_ROLE__ = <%- JSON.stringify((typeof user !== 'undefined' && user && user.rol) ? user.rol : '') %>;
+    </script>
     <script src="/js/mesas.js"></script>
 </body>
 </html>

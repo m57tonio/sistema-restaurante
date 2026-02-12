@@ -5,6 +5,9 @@ $(function() {
   const canvas = new bootstrap.Offcanvas('#canvasPedido');
   let pedidoActual = null; // { id, mesa_id }
   let items = []; // items del pedido en UI
+  // Rol actual (inyectado desde views/mesas.ejs)
+  // Relacionado con: views/mesas.ejs (window.__USER_ROLE__) y server.js (protección de rutas)
+  const userRole = String(window.__USER_ROLE__ || '').toLowerCase(); // administrador | mesero
 
   // ===== Pago mixto (varios medios) =====
   // Relacionado con:
@@ -273,9 +276,17 @@ $(function() {
       const precio = Number((it.precio_unitario != null ? it.precio_unitario : it.precio) || 0);
       const subtotal = Number(it.subtotal != null ? it.subtotal : (cantidad * precio));
       total += subtotal;
+      // Mostrar nota debajo del producto (si existe), útil para "Padre - Hijos / Obs."
+      // Relacionado con: public/js/mesas.js (selección de hijos) y Cocina (muestra it.nota)
+      const nombre = escapeHtml(it.producto_nombre || it.nombre || it.producto_id);
+      const nota = String(it.nota || '').trim();
+      const notaHtml = nota ? `<div class="small text-muted mt-1">${escapeHtml(nota)}</div>` : '';
       tbody.append(`
         <tr>
-          <td>${it.producto_nombre || it.nombre || it.producto_id}</td>
+          <td>
+            <div>${nombre}</div>
+            ${notaHtml}
+          </td>
           <td class="text-end">${cantidad}</td>
           <td class="text-end">${formatear(precio)}</td>
           <td class="text-end">${formatear(subtotal)}</td>
@@ -342,36 +353,161 @@ $(function() {
   // Selección rápida: UND por defecto + nota para cocina (oculta offcanvas durante todo el flujo)
   async function seleccionarProducto(p){
     await runWithOffcanvasHidden(async () => {
-      const cantidadRes = await Swal.fire({
-        title: `Cantidad para ${p.nombre}`,
-        input: 'number', inputValue: 1, inputAttributes:{ step: '0.1', min: '0.1' },
-        showCancelButton: true,
-        didOpen: () => {
-          const inp = document.querySelector('.swal2-input');
-          if (inp) {
-            ['keydown','keyup','keypress','paste','copy','cut','contextmenu'].forEach(evt => {
-              inp.addEventListener(evt, e => e.stopPropagation());
-            });
-          }
+      // Consultar si el producto seleccionado (padre) tiene "hijos" configurados.
+      // NUEVO (preferido): hijos como items de texto -> /hijos-items
+      // LEGADO (compat): hijos como productos -> /hijos
+      // Relacionado con: routes/productos.js y database.sql (producto_hijos_items / producto_hijos)
+      let hijosItems = []; // [{id,nombre,...}]
+      let hijosProductos = []; // [{id,nombre,codigo}]
+      try {
+        const r = await fetch(`/api/productos/${encodeURIComponent(p.id)}/hijos-items`);
+        if (r.ok) {
+          const data = await r.json();
+          hijosItems = Array.isArray(data) ? data : [];
         }
-      });
-      if(!cantidadRes.value) return;
+      } catch (_) { hijosItems = []; }
 
-      const notaRes = await Swal.fire({
-        title: 'Nota para cocina (opcional)',
-        input: 'text', inputPlaceholder: 'Ej: sin cebolla, sin queso...', showCancelButton: true,
-        didOpen: () => {
-          const inp = document.querySelector('.swal2-input');
-          if (inp) {
-            ['keydown','keyup','keypress','paste','copy','cut','contextmenu'].forEach(evt => {
-              inp.addEventListener(evt, e => e.stopPropagation());
-            });
+      // Fallback legacy: si no hay items, intentamos hijos como productos
+      if (!hijosItems || hijosItems.length === 0) {
+        try {
+          const r2 = await fetch(`/api/productos/${encodeURIComponent(p.id)}/hijos`);
+          if (r2.ok) {
+            const data2 = await r2.json();
+            hijosProductos = Array.isArray(data2) ? data2 : [];
           }
-        }
-      });
+        } catch (_) { hijosProductos = []; }
+      }
+
+      let cantidad = 1;
+      let notaFinal = '';
+
+      const tieneHijos = (Array.isArray(hijosItems) && hijosItems.length > 0) || (Array.isArray(hijosProductos) && hijosProductos.length > 0);
+      if (!tieneHijos) {
+        // Flujo anterior (sin hijos): pedir cantidad y nota opcional
+        const cantidadRes = await Swal.fire({
+          title: `Cantidad para ${p.nombre}`,
+          input: 'number',
+          inputValue: 1,
+          inputAttributes:{ step: '0.1', min: '0.1' },
+          showCancelButton: true,
+          didOpen: () => {
+            const inp = document.querySelector('.swal2-input');
+            if (inp) {
+              ['keydown','keyup','keypress','paste','copy','cut','contextmenu'].forEach(evt => {
+                inp.addEventListener(evt, e => e.stopPropagation());
+              });
+            }
+          }
+        });
+        if(!cantidadRes.value) return;
+
+        const notaRes = await Swal.fire({
+          title: 'Nota para cocina (opcional)',
+          input: 'text',
+          inputPlaceholder: 'Ej: sin cebolla, sin queso...',
+          showCancelButton: true,
+          didOpen: () => {
+            const inp = document.querySelector('.swal2-input');
+            if (inp) {
+              ['keydown','keyup','keypress','paste','copy','cut','contextmenu'].forEach(evt => {
+                inp.addEventListener(evt, e => e.stopPropagation());
+              });
+            }
+          }
+        });
+
+        cantidad = Number(cantidadRes.value);
+        notaFinal = (notaRes.value || '').trim();
+      } else {
+        // Nuevo flujo (con hijos): seleccionar múltiples hijos + observación en una sola pantalla
+        // Renderizamos de forma uniforme, pero con origen distinto:
+        // - items: "nombre" (texto)
+        // - productos: "nombre" (nombre producto hijo)
+        const listaHijos = (Array.isArray(hijosItems) && hijosItems.length > 0)
+          ? hijosItems.map(it => ({ key: `i_${it.id}`, label: String(it.nombre || '').trim() }))
+          : (hijosProductos || []).map(pr => ({ key: `p_${pr.id}`, label: String(pr.nombre || '').trim() }));
+
+        const hijosHtml = listaHijos.map(h => {
+          const key = String(h.key);
+          const label = escapeHtml(h.label || '');
+          const checkboxId = `phH_${key.replace(/[^a-zA-Z0-9_]/g,'_')}`;
+          return `
+            <div class="form-check">
+              <input class="form-check-input ph-hijo" type="checkbox" value="${escapeHtml(key)}" id="${checkboxId}">
+              <label class="form-check-label" for="${checkboxId}">${label}</label>
+            </div>
+          `;
+        }).join('');
+
+        const result = await Swal.fire({
+          title: `Montar ${escapeHtml(p.nombre)}`,
+          html: `
+            <div class="text-start">
+              <div class="small text-muted mb-2">
+                Selecciona los <strong>hijos</strong> (opcional) y escribe la <strong>observación</strong>. No cambia el precio del producto padre.
+              </div>
+
+              <label class="form-label small mb-1">Cantidad</label>
+              <input id="phCantidad" type="number" class="form-control mb-2" value="1" step="0.1" min="0.1" />
+
+              <label class="form-label small mb-1">Hijos</label>
+              <div class="border rounded p-2 mb-2" style="max-height:220px; overflow:auto;">
+                ${hijosHtml}
+              </div>
+
+              <label class="form-label small mb-1">Observación (opcional)</label>
+              <input id="phObs" type="text" class="form-control" placeholder="Ej: Poco arroz" />
+            </div>
+          `,
+          showCancelButton: true,
+          confirmButtonText: 'Agregar al pedido',
+          cancelButtonText: 'Cancelar',
+          focusConfirm: false,
+          didOpen: () => {
+            // Evitar que eventos del offcanvas interfieran (copiar/pegar/teclas)
+            ['phCantidad', 'phObs'].forEach(id => {
+              const el = document.getElementById(id);
+              if (!el) return;
+              ['keydown','keyup','keypress','paste','copy','cut','contextmenu'].forEach(evt => {
+                el.addEventListener(evt, e => e.stopPropagation());
+              });
+            });
+            // Enfocar cantidad al abrir
+            const qty = document.getElementById('phCantidad');
+            if (qty) setTimeout(() => { try { qty.focus(); qty.select(); } catch(_) {} }, 0);
+          },
+          preConfirm: () => {
+            const qty = Number(document.getElementById('phCantidad')?.value || 0);
+            if (!Number.isFinite(qty) || qty <= 0) {
+              Swal.showValidationMessage('La cantidad debe ser mayor a 0');
+              return false;
+            }
+            const obs = (document.getElementById('phObs')?.value || '').trim();
+            const hijosSel = Array.from(document.querySelectorAll('.ph-hijo:checked'))
+              .map(ch => String(ch.value || '').trim())
+              .filter(Boolean);
+            return { qty, obs, hijosSel };
+          }
+        });
+
+        if (!result.isConfirmed) return;
+
+        cantidad = Number(result.value.qty);
+        const obs = String(result.value.obs || '').trim();
+        const hijosSel = Array.isArray(result.value.hijosSel) ? result.value.hijosSel : [];
+
+        // Construir nota final: "Hijo1 / Hijo2 / Obs. ..."
+        const mapLabel = new Map(listaHijos.map(h => [String(h.key), String(h.label || '').trim()]));
+        const nombresSel = hijosSel.map(k => mapLabel.get(String(k)) || '').map(s => String(s || '').trim()).filter(Boolean);
+
+        const parts = [...nombresSel];
+        if (obs) parts.push(`Obs. ${obs}`);
+        notaFinal = parts.join(' / ');
+      }
+
       const unidad = 'UND';
       const precio = p.precio_unidad;
-      const body = { producto_id: p.id, cantidad: Number(cantidadRes.value), unidad, precio: Number(precio), nota: notaRes.value || '' };
+      const body = { producto_id: p.id, cantidad: Number(cantidad), unidad, precio: Number(precio), nota: notaFinal || '' };
       const resp = await fetch(`/api/mesas/pedidos/${pedidoActual.id}/items`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       const data = await resp.json();
       if(!resp.ok) return Swal.fire({icon:'error', title: data.error||'Error al agregar'});
@@ -587,20 +723,39 @@ $(function() {
   }
 
   // -- Helpers de cliente: búsqueda por nombre con default "Consumidor final" --
-  async function getOrCreateConsumidorFinal(){
-    // Buscar por nombre
+  async function getConsumidorFinalOrNull(){
+    // Buscar "Consumidor final" por nombre (sin crear nada).
+    // Relacionado con: requisito -> mesero NO puede crear cliente al facturar.
     try{
       const r = await fetch('/api/clientes/buscar?q=consumidor%20final');
       const list = await r.json();
-      const cf = list.find(c => (c.nombre||'').toLowerCase() === 'consumidor final');
-      if(cf) return cf;
-    }catch(_){/* noop */}
-    // Crear si no existe
+      const cf = (Array.isArray(list) ? list : []).find(c => (c.nombre||'').toLowerCase() === 'consumidor final');
+      return cf || null;
+    }catch(_){
+      return null;
+    }
+  }
+
+  async function getOrCreateConsumidorFinal(){
+    // Buscar o crear el cliente por defecto "Consumidor final" (solo para admin, no mesero).
+    // Relacionado con:
+    // - routes/clientes.js (POST /api/clientes)
+    // - public/js/mesas.js (selector de cliente)
+    // Nota: para mesero usaremos getConsumidorFinalOrNull() y evitaremos crear.
+    const found = await getConsumidorFinalOrNull();
+    if(found) return found;
     try{
-      const r = await fetch('/api/clientes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ nombre: 'Consumidor final' }) });
-      if(r.ok){ const cf = await r.json(); return { id: cf.id, nombre: 'Consumidor final' }; }
+      const r = await fetch('/api/clientes', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ nombre: 'Consumidor final' })
+      });
+      if(r.ok){
+        const cf = await r.json();
+        return { id: cf.id, nombre: 'Consumidor final' };
+      }
     }catch(_){/* noop */}
-    // Último recurso: retornar marcador para evitar bloqueo
+    // Último recurso: retornar marcador (admin podrá elegir otro cliente)
     return { id: null, nombre: 'Consumidor final' };
   }
 
@@ -611,8 +766,11 @@ $(function() {
   }
 
   async function seleccionarClienteConBusqueda(){
-    const defaultCliente = await getOrCreateConsumidorFinal();
-    let seleccionado = defaultCliente;
+    const isMesero = (userRole === 'mesero');
+    // Mesero: NO crear clientes. Admin: puede crear y también autogenerar "Consumidor final" si falta.
+    // Relacionado con: requisito solicitado
+    const defaultCliente = isMesero ? await getConsumidorFinalOrNull() : await getOrCreateConsumidorFinal();
+    let seleccionado = defaultCliente || null;
     // Bucle para permitir crear cliente y luego usarlo
     // Confirm = Usar cliente; Deny = Crear cliente; Cancel = cancelar flujo
     // Tras crear, retornamos el nuevo cliente directamente
@@ -622,7 +780,13 @@ $(function() {
       const result = await Swal.fire({
         title: 'Seleccionar cliente',
         html: `
-          <div class="mb-2 text-start small text-muted">Predeterminado: <strong id="cfNombre">${seleccionado.nombre}</strong></div>
+          <div class="mb-2 text-start small text-muted">
+            Predeterminado:
+            <strong id="cfNombre">${seleccionado ? seleccionado.nombre : '— (selecciona un cliente)'}</strong>
+          </div>
+          ${isMesero ? `<div class="alert alert-info py-2 px-3 small mb-2">
+            <i class="bi bi-info-circle me-1"></i>Como <strong>mesero</strong>, no puedes crear clientes desde Facturar. Busca y selecciona uno existente.
+          </div>` : ''}
           <div class="input-group mb-2">
             <span class="input-group-text"><i class="bi bi-search"></i></span>
             <input id="buscarClienteMesa" class="form-control" placeholder="Buscar cliente por nombre o teléfono..." />
@@ -632,9 +796,19 @@ $(function() {
           ${buildPedidoResumenHtml()}
         `,
         showCancelButton: true,
-        showDenyButton: true,
+        // Mesero: ocultar la opción "Crear cliente"
+        // Relacionado con: requisito solicitado
+        showDenyButton: !isMesero,
         confirmButtonText: 'Usar cliente',
         denyButtonText: 'Crear cliente',
+        preConfirm: () => {
+          // Validación: debe existir un cliente seleccionado con id válido.
+          if (!seleccionado || !seleccionado.id) {
+            Swal.showValidationMessage('Seleccione un cliente existente.');
+            return false;
+          }
+          return seleccionado;
+        },
         didOpen: async () => {
           const $input = document.getElementById('buscarClienteMesa');
           const $list = document.getElementById('resultadosClientesMesa');
@@ -647,13 +821,20 @@ $(function() {
             });
           };
           allowClipboard($input);
-          // Prefill lista con Consumidor final
+          // Prefill lista con Consumidor final (si existe)
           $list.innerHTML = '';
-          const li = document.createElement('a');
-          li.href = '#'; li.className = 'list-group-item list-group-item-action active';
-          li.textContent = `${seleccionado.nombre} (predeterminado)`;
-          li.onclick = (e)=>{ e.preventDefault(); marcarSeleccion(li, seleccionado); };
-          $list.appendChild(li);
+          if (seleccionado && seleccionado.id) {
+            const li = document.createElement('a');
+            li.href = '#'; li.className = 'list-group-item list-group-item-action active';
+            li.textContent = `${seleccionado.nombre} (predeterminado)`;
+            li.onclick = (e)=>{ e.preventDefault(); marcarSeleccion(li, seleccionado); };
+            $list.appendChild(li);
+          } else {
+            const empty = document.createElement('div');
+            empty.className = 'list-group-item text-muted';
+            empty.innerHTML = '<i class="bi bi-search me-1"></i>Escribe para buscar y seleccionar un cliente...';
+            $list.appendChild(empty);
+          }
 
           // Toggle resumen
           const btnRes = document.getElementById('btnToggleResumen');
@@ -765,7 +946,8 @@ $(function() {
       }
 
       if(result.isConfirmed){
-        return seleccionado;
+        // La validación de selección se hace en preConfirm y viene en result.value
+        return result.value;
       }
       // Cancelado
       return null;

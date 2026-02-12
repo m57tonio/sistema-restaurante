@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login</title>
+  <link href="/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.css">
+  <style>
+    html, body { height: 100%; }
+    /* Layout consistente con el resto de vistas:
+       - body en columna para permitir footer pegado abajo (mt-auto)
+       - contenedor principal centrado verticalmente */
+    body { min-height: 100vh; display:flex; flex-direction:column; background:#f8f9fa; }
+    main { flex: 1 0 auto; display:flex; align-items:center; }
+    .card { border: none; box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.08); }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="container">
+      <div class="row justify-content-center">
+        <div class="col-12 col-md-6 col-lg-4">
+          <div class="card">
+            <div class="card-body p-4">
+              <div class="d-flex align-items-center mb-3">
+                <div class="me-2 text-primary"><i class="bi bi-shield-lock fs-3"></i></div>
+                <div>
+                  <div class="fw-bold">Iniciar sesión</div>
+                  <div class="text-muted small">Accede según tu rol (admin / mesero / cocinero).</div>
+                </div>
+              </div>
+
+              <% if (error) { %>
+                <div class="alert alert-danger py-2 small"><%= error %></div>
+              <% } %>
+
+              <!-- Form login -->
+              <!-- Relacionado con: routes/auth.js (POST /login) -->
+              <form method="POST" action="/login" autocomplete="off">
+                <div class="mb-3">
+                  <label class="form-label">Usuario</label>
+                  <input name="usuario" class="form-control" required autofocus>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Contraseña</label>
+                  <input name="password" type="password" class="form-control" required>
+                </div>
+                <button class="btn btn-primary w-100" type="submit">
+                  <i class="bi bi-box-arrow-in-right me-1"></i> Entrar
+                </button>
+              </form>
+
+              <div class="text-muted small mt-3">
+                Para ingresar por primera vez utiliza:
+                <strong>usuario: admin</strong> y <strong>contraseña: admin123</strong>.
+                Recuerda cambiar la contraseña después del primer acceso.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer global reutilizable -->
+  <!-- Relacionado con: views/partials/footer.ejs (mismo footer en todas las páginas) -->
+  <%- include('partials/footer') %>
+
+  <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+

@@ -1,28 +1,46 @@
 <nav class="navbar navbar-expand-lg navbar-dark mb-4" style="background-color:#2c3e50;box-shadow:0 2px 4px rgba(0,0,0,.1);font-size:1.1rem;">
   <div class="container">
+    <% const u = (typeof user !== 'undefined' && user) ? user : null; %>
+    <% const rol = u ? String(u.rol || '').toLowerCase() : ''; %>
+
     <a class="navbar-brand fw-bold" href="/" style="color:#fff;font-size:1.4rem;">Sistema de Facturación</a>
-    <div class="d-flex">
-      <a href="/" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Inicio">
-        <i class="bi bi-house-fill"></i>
-      </a>
-      <a href="/mesas" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Mesas">
-        <i class="bi bi-grid"></i>
-      </a>
-      <a href="/cocina" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Cocina">
-        <i class="bi bi-egg-fried"></i>
-      </a>
-      <a href="/ventas" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Historial de Ventas">
-        <i class="bi bi-receipt"></i>
-      </a>
-      <a href="/productos" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Gestionar Productos">
-        <i class="bi bi-box"></i>
-      </a>
-      <a href="/clientes" class="btn btn-outline-light me-2" data-bs-toggle="tooltip" title="Gestionar Clientes">
-        <i class="bi bi-people"></i>
-      </a>
-      <a href="/configuracion" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Configuración">
-        <i class="bi bi-gear"></i>
-      </a>
+
+    <div class="d-flex align-items-center gap-2">
+      <!-- Menú según rol -->
+      <!-- Relacionado con: middleware/auth.js (requireRole) y server.js (protección de rutas) -->
+
+      <% if (rol === 'administrador') { %>
+        <a href="/" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Inicio"><i class="bi bi-house-fill"></i></a>
+        <a href="/mesas" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Mesas"><i class="bi bi-grid"></i></a>
+        <a href="/cocina" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Cocina"><i class="bi bi-egg-fried"></i></a>
+        <a href="/ventas" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Historial de Ventas"><i class="bi bi-receipt"></i></a>
+        <a href="/productos" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Gestionar Productos"><i class="bi bi-box"></i></a>
+        <a href="/clientes" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Gestionar Clientes"><i class="bi bi-people"></i></a>
+        <a href="/usuarios" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Usuarios"><i class="bi bi-person-gear"></i></a>
+        <a href="/configuracion" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Configuración"><i class="bi bi-gear"></i></a>
+      <% } %>
+
+      <% if (rol === 'mesero') { %>
+        <a href="/mesas" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Mesas"><i class="bi bi-grid"></i></a>
+        <a href="/cocina" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Cocina (Listos)"><i class="bi bi-egg-fried"></i></a>
+      <% } %>
+
+      <% if (rol === 'cocinero') { %>
+        <a href="/cocina" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Cocina"><i class="bi bi-egg-fried"></i></a>
+      <% } %>
+
+      <!-- Usuario + logout -->
+      <% if (u) { %>
+        <div class="vr bg-light opacity-50 mx-1"></div>
+        <span class="badge text-bg-light text-dark" data-bs-toggle="tooltip" title="Usuario actual">
+          <i class="bi bi-person-circle me-1"></i><%= u.usuario %> · <%= rol %>
+        </span>
+        <form method="POST" action="/logout" class="m-0">
+          <button type="submit" class="btn btn-outline-light" data-bs-toggle="tooltip" title="Cerrar sesión">
+            <i class="bi bi-box-arrow-right"></i>
+          </button>
+        </form>
+      <% } %>
     </div>
   </div>
 </nav>

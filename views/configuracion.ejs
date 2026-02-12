@@ -129,6 +129,56 @@
                 </div>
             </div>
 
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-wifi me-1"></i>Vincular dispositivos (Red local)</span>
+                    <span class="badge text-bg-secondary">Administrador</span>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info py-2 px-3 small">
+                        Genera un QR con la URL/IP donde está corriendo el sistema para abrirlo rápidamente desde celulares o tablets de la misma red.
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-12 col-lg-7">
+                            <label class="form-label">URL de conexión</label>
+                            <!-- Select de URLs detectadas por backend -->
+                            <!-- Relacionado con: routes/configuracion.js (GET /configuracion/conexion-info) -->
+                            <select id="connUrlSelect" class="form-select mb-2"></select>
+                            <div class="d-flex gap-2 flex-wrap">
+                                <button type="button" id="btnRefrescarConexion" class="btn btn-outline-primary btn-sm">
+                                    <i class="bi bi-arrow-clockwise me-1"></i>Actualizar URLs y QR
+                                </button>
+                                <button type="button" id="btnCopiarUrl" class="btn btn-outline-secondary btn-sm">
+                                    <i class="bi bi-clipboard me-1"></i>Copiar URL
+                                </button>
+                                <button type="button" id="btnDiagnosticarConexion" class="btn btn-outline-danger btn-sm">
+                                    <i class="bi bi-activity me-1"></i>Diagnosticar conexión
+                                </button>
+                            </div>
+                            <div id="connMetaInfo" class="small text-muted mt-2"></div>
+                        </div>
+                        <div class="col-12 col-lg-5">
+                            <div class="border rounded p-2 bg-white text-center">
+                                <div class="small text-muted mb-2">QR de conexión</div>
+                                <img id="connQrImage" alt="QR de conexión" style="max-width: 280px; width: 100%; display: none;">
+                                <div id="connQrEmpty" class="small text-muted py-4">
+                                    <i class="bi bi-qr-code fs-3 d-block mb-1"></i>
+                                    Aún no se ha generado el QR
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="diagnosticoWrap" class="mt-3 d-none">
+                        <h6 class="mb-2"><i class="bi bi-stethoscope me-1"></i>Resultado del diagnóstico</h6>
+                        <div id="diagnosticoEstado" class="mb-2"></div>
+                        <div id="diagnosticoCausas" class="mb-2"></div>
+                        <div id="diagnosticoRecomendaciones"></div>
+                    </div>
+                </div>
+            </div>
+
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary">Guardar Configuración</button>
                 <a href="/" class="btn btn-secondary">Volver</a>
@@ -165,6 +215,146 @@
 
             previewFile(document.getElementById('inputLogo'), document.getElementById('previewLogo'));
             previewFile(document.getElementById('inputQr'), document.getElementById('previewQr'));
+        })();
+
+        // Apartado de conexión para vinculación rápida por QR
+        // Relacionado con: routes/configuracion.js (/conexion-info y /diagnostico)
+        (function initVinculacionDispositivos() {
+            const $select = document.getElementById('connUrlSelect');
+            const $btnRefresh = document.getElementById('btnRefrescarConexion');
+            const $btnCopy = document.getElementById('btnCopiarUrl');
+            const $btnDiag = document.getElementById('btnDiagnosticarConexion');
+            const $meta = document.getElementById('connMetaInfo');
+            const $qr = document.getElementById('connQrImage');
+            const $qrEmpty = document.getElementById('connQrEmpty');
+            const $diagWrap = document.getElementById('diagnosticoWrap');
+            const $diagEstado = document.getElementById('diagnosticoEstado');
+            const $diagCausas = document.getElementById('diagnosticoCausas');
+            const $diagRecs = document.getElementById('diagnosticoRecomendaciones');
+
+            function selectedUrl() {
+                return String($select && $select.value ? $select.value : '').trim();
+            }
+
+            function setDiagVisible(show) {
+                if (!$diagWrap) return;
+                $diagWrap.classList.toggle('d-none', !show);
+            }
+
+            function renderDiagList(container, title, items, badgeClass) {
+                if (!container) return;
+                const arr = Array.isArray(items) ? items : [];
+                if (arr.length === 0) {
+                    container.innerHTML = '';
+                    return;
+                }
+                const lis = arr.map((x) => `<li>${String(x)}</li>`).join('');
+                container.innerHTML = `
+                    <div class="card border-0 bg-light">
+                        <div class="card-body py-2 px-3">
+                            <div class="small mb-1"><span class="badge ${badgeClass}">${title}</span></div>
+                            <ul class="mb-0 small">${lis}</ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function updateQr(src) {
+                const hasQr = !!src;
+                if ($qr) {
+                    $qr.src = hasQr ? src : '';
+                    $qr.style.display = hasQr ? 'block' : 'none';
+                }
+                if ($qrEmpty) $qrEmpty.style.display = hasQr ? 'none' : 'block';
+            }
+
+            async function loadConnectionInfo() {
+                if (!$select) return;
+                $select.innerHTML = '<option value="">Cargando...</option>';
+                try {
+                    const resp = await fetch('/configuracion/conexion-info');
+                    const data = await resp.json();
+                    if (!resp.ok) throw new Error(data.error || 'No se pudo obtener la información de conexión');
+
+                    const urls = Array.isArray(data.urls) ? data.urls : [];
+                    const preferred = String(data.preferred_url || '').trim();
+
+                    $select.innerHTML = '';
+                    if (urls.length === 0) {
+                        $select.innerHTML = '<option value="">No se detectaron URLs</option>';
+                    } else {
+                        urls.forEach((u) => {
+                            const opt = document.createElement('option');
+                            opt.value = u;
+                            opt.textContent = u;
+                            if (u === preferred) opt.selected = true;
+                            $select.appendChild(opt);
+                        });
+                    }
+
+                    updateQr(data.qr_data_url || null);
+                    if ($meta) {
+                        const ips = Array.isArray(data.ips_locales) ? data.ips_locales : [];
+                        $meta.textContent = `Host: ${data.host_header || '-'} · Puerto: ${data.puerto || '-'} · IPs LAN: ${ips.length ? ips.join(', ') : 'No detectadas'}`;
+                    }
+                    setDiagVisible(false);
+                } catch (e) {
+                    updateQr(null);
+                    if ($meta) $meta.textContent = `Error: ${String(e.message || e)}`;
+                }
+            }
+
+            async function copyUrl() {
+                const url = selectedUrl();
+                if (!url) return;
+                try {
+                    await navigator.clipboard.writeText(url);
+                    alert('URL copiada al portapapeles');
+                } catch (_) {
+                    // Fallback para navegadores/entornos sin clipboard
+                    const tmp = document.createElement('input');
+                    tmp.value = url;
+                    document.body.appendChild(tmp);
+                    tmp.select();
+                    try { document.execCommand('copy'); } catch (_) {}
+                    document.body.removeChild(tmp);
+                    alert('URL copiada');
+                }
+            }
+
+            async function diagnosticar() {
+                const target = selectedUrl();
+                if (!target) return;
+                setDiagVisible(true);
+                if ($diagEstado) $diagEstado.innerHTML = '<span class="badge text-bg-secondary">Diagnóstico en curso...</span>';
+                if ($diagCausas) $diagCausas.innerHTML = '';
+                if ($diagRecs) $diagRecs.innerHTML = '';
+
+                try {
+                    const resp = await fetch(`/configuracion/diagnostico?target_url=${encodeURIComponent(target)}`);
+                    const data = await resp.json();
+                    if (!resp.ok) throw new Error(data.error || 'No se pudo diagnosticar');
+
+                    const ok = !!(data.db_ok && data.server_http_ok);
+                    if ($diagEstado) {
+                        $diagEstado.innerHTML = ok
+                            ? `<span class="badge text-bg-success">Conexión base OK</span>`
+                            : `<span class="badge text-bg-danger">Se detectaron problemas de conexión</span>`;
+                    }
+
+                    renderDiagList($diagCausas, 'Posibles causas', data.posibles_causas, 'text-bg-warning');
+                    renderDiagList($diagRecs, 'Recomendaciones', data.recomendaciones, 'text-bg-primary');
+                } catch (e) {
+                    if ($diagEstado) $diagEstado.innerHTML = `<span class="badge text-bg-danger">Error: ${String(e.message || e)}</span>`;
+                }
+            }
+
+            if ($btnRefresh) $btnRefresh.addEventListener('click', loadConnectionInfo);
+            if ($btnCopy) $btnCopy.addEventListener('click', copyUrl);
+            if ($btnDiag) $btnDiag.addEventListener('click', diagnosticar);
+
+            // Carga inicial automática al abrir Configuración
+            loadConnectionInfo();
         })();
     </script>
 </body>

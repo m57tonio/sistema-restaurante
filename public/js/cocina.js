@@ -3,6 +3,9 @@
 
 $(function(){
   let allItems = Array.isArray(window.__COCINA_ITEMS__) ? window.__COCINA_ITEMS__ : [];
+  const userRole = String(window.__USER_ROLE__ || '').toLowerCase(); // administrador | cocinero | mesero
+  let entregadosItems = []; // items estado='servido' (cargados por rango de fecha)
+  let rechazadosItems = []; // items estado='rechazado' (cargados por rango de fecha)
   let autoRefreshTimer = null;
 
   function setText(id, value){
@@ -43,7 +46,9 @@ $(function(){
     const map = {
       enviados: '#tabEnviados-tab',
       preparando: '#tabPreparando-tab',
-      listos: '#tabListos-tab'
+      listos: '#tabListos-tab',
+      // Relacionado con: views/cocina.ejs (pestaña Rechazados)
+      rechazados: '#tabRechazados-tab'
     };
     const sel = map[String(tab || '').toLowerCase()];
     if(!sel) return;
@@ -58,27 +63,93 @@ $(function(){
     render();
   }
 
+  async function cargarEntregados(desde, hasta){
+    // Cargar items entregados (servido) en un rango de fechas
+    // Relacionado con: routes/cocina.js (GET /api/cocina/entregados)
+    const params = new URLSearchParams();
+    if(desde) params.set('desde', desde);
+    if(hasta) params.set('hasta', hasta);
+    const resp = await fetch(`/api/cocina/entregados?${params.toString()}`);
+    const items = await resp.json();
+    entregadosItems = Array.isArray(items) ? items : [];
+    render();
+  }
+
+  async function cargarRechazados(desde, hasta){
+    // Cargar items rechazados en un rango de fechas
+    // Relacionado con: routes/cocina.js (GET /api/cocina/rechazados)
+    const params = new URLSearchParams();
+    if(desde) params.set('desde', desde);
+    if(hasta) params.set('hasta', hasta);
+    const resp = await fetch(`/api/cocina/rechazados?${params.toString()}`);
+    const items = await resp.json();
+    rechazadosItems = Array.isArray(items) ? items : [];
+    render();
+  }
+
+  async function confirmarCancelarItem(it){
+    // Confirmación (usa SweetAlert2 si está disponible; si no, usa confirm nativo)
+    // Relacionado con: views/cocina.ejs (incluye vendor/sweetalert2 en algunos entornos)
+    const producto = String(it?.producto_nombre || '').trim() || 'este item';
+    const mesa = String(it?.mesa_numero || '').trim();
+    const texto = `¿Cancelar ${producto}${mesa ? ` (Mesa ${mesa})` : ''}?`;
+
+    if (window.Swal && typeof window.Swal.fire === 'function') {
+      const r = await window.Swal.fire({
+        title: 'Cancelar pedido',
+        text: texto,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Sí, cancelar',
+        cancelButtonText: 'No'
+      });
+      return !!r.isConfirmed;
+    }
+    return window.confirm(texto);
+  }
+
+  function getHistoricoRango(){
+    const entDesde = document.getElementById('entDesde');
+    const entHasta = document.getElementById('entHasta');
+    const desde = entDesde ? String(entDesde.value || '').trim() : '';
+    const hasta = entHasta ? String(entHasta.value || '').trim() : '';
+    return { desde, hasta };
+  }
+
   function estadoUI(estado){
     if(estado === 'enviado') return { border:'primary', badge:'primary', label:'Enviado', icon:'bi-send' };
     if(estado === 'preparando') return { border:'warning', badge:'warning', label:'Preparando', icon:'bi-fire' };
     if(estado === 'listo') return { border:'success', badge:'success', label:'Listo', icon:'bi-check2-circle' };
+    if(estado === 'servido') return { border:'dark', badge:'dark', label:'Entregado', icon:'bi-box-seam' };
+    // Nuevo estado: rechazado (cancelación)
+    // Relacionado con: database.sql (ENUM) y routes/mesas.js (marca rechazado al liberar/cancelar)
+    if(estado === 'rechazado') return { border:'danger', badge:'danger', label:'Rechazado', icon:'bi-x-octagon' };
     return { border:'secondary', badge:'secondary', label:estado || '—', icon:'bi-question-circle' };
   }
 
   function cardItem(it){
     const ui = estadoUI(it.estado);
-    const ref = parseDate(it.enviado_at) || parseDate(it.created_at);
+    // Para entregados mostramos servido_at; para cola, enviado_at/created_at
+    const ref = (it.estado === 'servido' ? (parseDate(it.servido_at) || parseDate(it.updated_at)) : (parseDate(it.enviado_at) || parseDate(it.created_at)));
     const hora = ref ? ref.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
     const mesa = escapeHtml(it.mesa_numero);
     const producto = escapeHtml(it.producto_nombre);
     const nota = (it.nota || '').trim();
     const qty = Number(it.cantidad || 0);
 
+    // Acciones según rol:
+    // - Mesero: solo "Entregado" cuando está listo
+    // - Cocinero/Admin: preparar + marcar listo + entregado
+    const canKitchenActions = (userRole !== 'mesero');
+    // Cancelar desde cocina: solo cocinero/admin, en estados de cola/preparación/listo
+    // Relacionado con: routes/cocina.js (PUT /api/cocina/item/:id/rechazar)
+    const canCancelar = canKitchenActions && ['enviado','preparando','listo'].includes(String(it.estado || '').toLowerCase());
     const actions = `
       <div class="d-flex gap-2 flex-wrap justify-content-end mt-2">
-        ${it.estado==='enviado' ? `<button class="btn btn-sm btn-primary" data-action="prep" data-id="${it.id}"><i class="bi bi-play me-1"></i>Preparar</button>`:''}
-        ${it.estado==='preparando' ? `<button class="btn btn-sm btn-success" data-action="listo" data-id="${it.id}"><i class="bi bi-check2 me-1"></i>Marcar listo</button>`:''}
+        ${canKitchenActions && it.estado==='enviado' ? `<button class="btn btn-sm btn-primary" data-action="prep" data-id="${it.id}"><i class="bi bi-play me-1"></i>Preparar</button>`:''}
+        ${canKitchenActions && it.estado==='preparando' ? `<button class="btn btn-sm btn-success" data-action="listo" data-id="${it.id}"><i class="bi bi-check2 me-1"></i>Marcar listo</button>`:''}
         ${it.estado==='listo' ? `<button class="btn btn-sm btn-outline-dark" data-action="servido" data-id="${it.id}"><i class="bi bi-box-seam me-1"></i>Entregado</button>`:''}
+        ${canCancelar ? `<button class="btn btn-sm btn-outline-danger" data-action="cancelar" data-id="${it.id}"><i class="bi bi-x-octagon me-1"></i>Cancelar</button>`:''}
       </div>`;
 
     return `
@@ -131,11 +202,16 @@ $(function(){
     const enviadosEl = $('#listaEnviados').empty();
     const preparandoEl = $('#listaPreparando').empty();
     const listosEl = $('#listaListos').empty();
+    const entregadosEl = $('#listaEntregados').empty();
+    const rechazadosEl = $('#listaRechazados').empty();
 
     const items = filtrar(allItems);
     const enviados = items.filter(it => it.estado === 'enviado');
     const preparando = items.filter(it => it.estado === 'preparando');
     const listos = items.filter(it => it.estado === 'listo');
+
+    const entregadosFiltrados = filtrar(entregadosItems || []);
+    const rechazadosFiltrados = filtrar(rechazadosItems || []);
 
     // KPIs (contadores globales sin filtro, más útiles)
     const cEnviados = allItems.filter(it => it.estado === 'enviado').length;
@@ -147,6 +223,8 @@ $(function(){
     setText('pillEnviados', cEnviados);
     setText('pillPreparando', cPreparando);
     setText('pillListos', cListos);
+    setText('pillEntregados', (entregadosItems || []).length);
+    setText('pillRechazados', (rechazadosItems || []).length);
 
     enviados.forEach(it => enviadosEl.append(cardItem(it)));
     preparando.forEach(it => preparandoEl.append(cardItem(it)));
@@ -171,6 +249,15 @@ $(function(){
     setEmpty('emptyEnviados', enviados.length === 0);
     setEmpty('emptyPreparando', preparando.length === 0);
     setEmpty('emptyListos', listos.length === 0);
+
+    // Entregados: render simple (ya viene ordenado por fecha desc desde el backend)
+    entregadosFiltrados.forEach(it => entregadosEl.append(cardItem(it)));
+    setEmpty('emptyEntregados', entregadosFiltrados.length === 0);
+
+    // Rechazados: render simple (ya viene ordenado por fecha desc desde el backend)
+    // Relacionado con: views/cocina.ejs (pestaña Rechazados)
+    rechazadosFiltrados.forEach(it => rechazadosEl.append(cardItem(it)));
+    setEmpty('emptyRechazados', rechazadosFiltrados.length === 0);
   }
 
   // Acciones
@@ -189,6 +276,30 @@ $(function(){
     const id = this.dataset.id;
     await fetch(`/api/mesas/items/${id}/estado`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ estado:'servido' }) });
     await cargarCola();
+  });
+
+  $(document).on('click','[data-action="cancelar"]', async function(){
+    const id = String(this.dataset.id || '').trim();
+    if(!id) return;
+    const it = (allItems || []).find(x => String(x.id) === id) || null;
+    const ok = await confirmarCancelarItem(it || {});
+    if(!ok) return;
+
+    const resp = await fetch(`/api/cocina/item/${encodeURIComponent(id)}/rechazar`, { method:'PUT', headers:{'Content-Type':'application/json'} });
+    const data = await resp.json().catch(() => ({}));
+    if(!resp.ok){
+      if (window.Swal && typeof window.Swal.fire === 'function') {
+        await window.Swal.fire({ icon:'error', title: 'No se pudo cancelar', text: String(data?.error || 'Error') });
+      } else {
+        alert(String(data?.error || 'No se pudo cancelar'));
+      }
+      return;
+    }
+
+    // Refrescar cola + histórico (para que aparezca en Rechazados con el rango actual)
+    await cargarCola();
+    const { desde, hasta } = getHistoricoRango();
+    await cargarRechazados(desde, hasta);
   });
 
   function startAutoRefresh(){
@@ -223,6 +334,54 @@ $(function(){
   render();
   cargarCola();
   activarTabDesdeQuery();
+
+  // ===== Entregados: filtro por fecha (default hoy) =====
+  function todayISO(){
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  const entDesde = document.getElementById('entDesde');
+  const entHasta = document.getElementById('entHasta');
+  const btnFiltrar = document.getElementById('btnFiltrarEntregados');
+
+  // Set default hoy
+  const hoy = todayISO();
+  if (entDesde && !entDesde.value) entDesde.value = hoy;
+  if (entHasta && !entHasta.value) entHasta.value = hoy;
+
+  async function aplicarFiltrosHistorico(){
+    const desde = entDesde ? String(entDesde.value || '').trim() : '';
+    const hasta = entHasta ? String(entHasta.value || '').trim() : '';
+    // Usamos los mismos filtros para Entregados y Rechazados (histórico por rango)
+    // Relacionado con: routes/cocina.js (/entregados, /rechazados)
+    await Promise.all([
+      cargarEntregados(desde, hasta),
+      cargarRechazados(desde, hasta)
+    ]);
+  }
+
+  if (btnFiltrar) btnFiltrar.addEventListener('click', aplicarFiltrosHistorico);
+  if (entDesde) entDesde.addEventListener('change', aplicarFiltrosHistorico);
+  if (entHasta) entHasta.addEventListener('change', aplicarFiltrosHistorico);
+
+  // Cargar entregados al iniciar
+  aplicarFiltrosHistorico();
+
+  // Para mesero, abrir por defecto la pestaña de "Listos"
+  // (a menos que ya venga ?tab=... en la URL)
+  if (userRole === 'mesero') {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get('tab')) {
+      const triggerEl = document.querySelector('#tabListos-tab');
+      if (triggerEl) {
+        try { new bootstrap.Tab(triggerEl).show(); } catch (_) { /* noop */ }
+      }
+    }
+  }
 });
 
 

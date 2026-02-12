@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup inicial</title>
+  <link href="/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.css">
+  <style>
+    html, body { height: 100%; }
+    body { min-height: 100vh; display:flex; align-items:center; background:#f8f9fa; }
+    .card { border: none; box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.08); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-12 col-md-7 col-lg-5">
+        <div class="card">
+          <div class="card-body p-4">
+            <div class="d-flex align-items-center mb-3">
+              <div class="me-2 text-success"><i class="bi bi-person-gear fs-3"></i></div>
+              <div>
+                <div class="fw-bold">Setup inicial</div>
+                <div class="text-muted small">Crea el primer usuario <strong>administrador</strong>.</div>
+              </div>
+            </div>
+
+            <% if (error) { %>
+              <div class="alert alert-danger py-2 small"><%= error %></div>
+            <% } %>
+
+            <!-- Form setup -->
+            <!-- Relacionado con: routes/auth.js (POST /setup) y database.sql (tabla usuarios) -->
+            <form method="POST" action="/setup" autocomplete="off">
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label">Usuario</label>
+                  <input name="usuario" class="form-control" required autofocus placeholder="admin">
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Nombre (opcional)</label>
+                  <input name="nombre" class="form-control" placeholder="Administrador">
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Contraseña</label>
+                  <input name="password" type="password" class="form-control" required>
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Confirmar contraseña</label>
+                  <input name="password2" type="password" class="form-control" required>
+                </div>
+              </div>
+              <button class="btn btn-success w-100 mt-3" type="submit">
+                <i class="bi bi-check2-circle me-1"></i> Crear administrador
+              </button>
+            </form>
+
+            <div class="alert alert-warning small mt-3 mb-0">
+              Si te aparece error de “migración”, ejecuta el <code>CREATE TABLE usuarios</code> del archivo <code>database.sql</code>.
+            </div>
+          </div>
+        </div>
+        <div class="text-center text-muted small mt-3">Sistema Restaurante</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+

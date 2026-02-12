@@ -12,6 +12,24 @@ CREATE TABLE IF NOT EXISTS productos (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+
+-- Hijos como "items" de texto (NO son productos, no tienen precio)
+-- Se usa para configurar componentes/opciones internas del producto padre.
+-- Ejemplo: Producto padre "CORRIENTE" -> items: "Goulash de cerdo", "Crema"
+-- Relacionado con:
+-- - routes/productos.js (endpoints /api/productos/:padreId/hijos-items)
+-- - views/productos.ejs + public/js/productos.js (panel para administrar items)
+-- - public/js/mesas.js (al montar pedido: seleccionar items y guardar en pedido_items.nota)
+CREATE TABLE IF NOT EXISTS producto_hijos_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    producto_padre_id INT NOT NULL,
+    nombre VARCHAR(120) NOT NULL,
+    orden INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_padre_nombre (producto_padre_id, nombre),
+    FOREIGN KEY (producto_padre_id) REFERENCES productos(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS clientes (
     id INT PRIMARY KEY AUTO_INCREMENT,
     nombre VARCHAR(100) NOT NULL,
@@ -74,6 +92,40 @@ CREATE TABLE IF NOT EXISTS configuracion_impresion (
     qr_tipo VARCHAR(50)
 ); 
 
+-- ===========================
+-- USUARIOS / LOGIN / ROLES
+-- Roles soportados: administrador, mesero, cocinero
+-- Relacionado con:
+-- - routes/auth.js (login/logout/setup)
+-- - routes/usuarios.js (panel CRUD usuarios)
+-- - middleware/auth.js (requireAuth/requireRole)
+-- - views/login.ejs, views/usuarios.ejs, views/partials/navbar.ejs
+-- ===========================
+CREATE TABLE IF NOT EXISTS usuarios (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    usuario VARCHAR(50) NOT NULL UNIQUE,
+    nombre VARCHAR(100) NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    rol ENUM('administrador','mesero','cocinero') NOT NULL DEFAULT 'mesero',
+    activo TINYINT(1) NOT NULL DEFAULT 1,
+    last_login TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Seed: crear/asegurar usuario administrador por defecto
+-- Usuario: admin
+-- Contraseña: admin123
+-- IMPORTANTE: cambia esta contraseña en Producción.
+-- Relacionado con: routes/auth.js (login) y routes/usuarios.js (panel usuarios)
+INSERT INTO usuarios (usuario, nombre, password_hash, rol, activo)
+VALUES ('admin', 'Administrador', '$2b$10$io4GOTM300XQHIsHtB0b4evsgKCQ2MMqCYXPyUnvXGUnAukq/xMNW', 'administrador', 1)
+ON DUPLICATE KEY UPDATE
+  nombre = VALUES(nombre),
+  password_hash = VALUES(password_hash),
+  rol = 'administrador',
+  activo = 1;
+
 -- Tablas para restaurante: mesas, pedidos y items de pedido
 CREATE TABLE IF NOT EXISTS mesas (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -88,7 +140,11 @@ CREATE TABLE IF NOT EXISTS pedidos (
     id INT AUTO_INCREMENT PRIMARY KEY,
     mesa_id INT NOT NULL,
     cliente_id INT,
-    estado ENUM('abierto', 'en_cocina', 'preparando', 'listo', 'servido', 'cerrado', 'cancelado') DEFAULT 'abierto',
+    -- Estado del pedido (flujo general). "rechazado" se usa cuando el pedido se cancela/rechaza.
+    -- Relacionado con:
+    -- - routes/mesas.js (liberar mesa -> marca pedido rechazado)
+    -- - routes/cocina.js + views/cocina.ejs + public/js/cocina.js (pestaña Rechazados)
+    estado ENUM('abierto', 'en_cocina', 'preparando', 'listo', 'servido', 'cerrado', 'cancelado', 'rechazado') DEFAULT 'abierto',
     total DECIMAL(10,2) NOT NULL DEFAULT 0,
     notas TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -105,7 +161,11 @@ CREATE TABLE IF NOT EXISTS pedido_items (
     unidad_medida ENUM('KG', 'UND', 'LB') DEFAULT 'UND',
     precio_unitario DECIMAL(10,2) NOT NULL,
     subtotal DECIMAL(10,2) NOT NULL,
-    estado ENUM('pendiente', 'enviado', 'preparando', 'listo', 'servido', 'cancelado') DEFAULT 'pendiente',
+    -- Estado del item (lo que cocina procesa). "rechazado" se usa para visualizar cancelaciones.
+    -- Relacionado con:
+    -- - routes/mesas.js (al rechazar/cancelar pedido, se marca el item como rechazado)
+    -- - routes/cocina.js + public/js/cocina.js (GET /api/cocina/rechazados)
+    estado ENUM('pendiente', 'enviado', 'preparando', 'listo', 'servido', 'cancelado', 'rechazado') DEFAULT 'pendiente',
     nota TEXT NULL,
     enviado_at TIMESTAMP NULL,
     preparado_at TIMESTAMP NULL,
@@ -136,3 +196,14 @@ CREATE TABLE IF NOT EXISTS factura_pagos (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE CASCADE
 );
+
+-- 3) Agregar estado "rechazado" a pedidos y pedido_items (si ya existían)
+-- Nota: Esto permite marcar pedidos cancelados como rechazados y visualizarlos en Cocina.
+-- Relacionado con:
+-- - routes/mesas.js (liberar mesa -> rechazar pedido)
+-- - routes/cocina.js / public/js/cocina.js (pestaña Rechazados)
+ALTER TABLE pedidos
+    MODIFY estado ENUM('abierto', 'en_cocina', 'preparando', 'listo', 'servido', 'cerrado', 'cancelado', 'rechazado') DEFAULT 'abierto';
+
+ALTER TABLE pedido_items
+    MODIFY estado ENUM('pendiente', 'enviado', 'preparando', 'listo', 'servido', 'cancelado', 'rechazado') DEFAULT 'pendiente';

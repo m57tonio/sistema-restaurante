@@ -14,7 +14,9 @@ router.get('/', async (req, res) => {
         const [mesas] = await db.query(`
             SELECT m.*, (
                 SELECT COUNT(*) FROM pedidos p 
-                WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado')
+                -- 'rechazado' se considera finalizado (no pedido activo)
+                -- Relacionado con: estado "rechazado" solicitado (ver database.sql)
+                WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado','rechazado')
             ) AS pedidos_abiertos
             FROM mesas m
             ORDER BY m.numero
@@ -35,7 +37,9 @@ router.get('/listar', async (req, res) => {
         const [mesas] = await db.query(`
             SELECT m.*, (
                 SELECT COUNT(*) FROM pedidos p 
-                WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado')
+                -- 'rechazado' se considera finalizado (no pedido activo)
+                -- Relacionado con: estado "rechazado" solicitado (ver database.sql)
+                WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado','rechazado')
             ) AS pedidos_abiertos
             FROM mesas m
             ORDER BY m.numero
@@ -131,7 +135,9 @@ router.post('/abrir', async (req, res) => {
         try {
             await connection.beginTransaction();
             const [existentes] = await connection.query(
-                `SELECT * FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado') LIMIT 1`,
+                // Nota: 'rechazado' NO es pedido activo; no se debe reutilizar al abrir
+                // Relacionado con: estado "rechazado" (database.sql)
+                `SELECT * FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado','rechazado') LIMIT 1`,
                 [mesa_id]
             );
             if (existentes.length > 0) {
@@ -250,8 +256,28 @@ router.put('/items/:itemId/estado', async (req, res) => {
     try {
         const itemId = req.params.itemId;
         const { estado } = req.body || {};
-        const permitidos = ['pendiente','enviado','preparando','listo','servido','cancelado'];
+        // 'rechazado' se usa para visualizar cancelaciones en Cocina.
+        // Relacionado con: routes/cocina.js (/api/cocina/rechazados)
+        const permitidos = ['pendiente','enviado','preparando','listo','servido','cancelado','rechazado'];
         if (!permitidos.includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
+
+        // Restricción por rol:
+        // - Mesero: SOLO puede marcar "servido" y SOLO si el item está en estado "listo"
+        // Relacionado con: vista Cocina (pestaña Listos) y requisito del usuario
+        const rol = String(req.session?.user?.rol || '').toLowerCase();
+        if (rol === 'mesero') {
+            if (estado !== 'servido') {
+                return res.status(403).json({ error: 'No autorizado: el mesero solo puede marcar como entregado' });
+            }
+            const [resultServido] = await db.query(
+                `UPDATE pedido_items SET estado = 'servido', servido_at = NOW() WHERE id = ? AND estado = 'listo'`,
+                [itemId]
+            );
+            if ((resultServido?.affectedRows || 0) === 0) {
+                return res.status(400).json({ error: 'Solo se puede marcar como entregado cuando el pedido está listo' });
+            }
+            return res.json({ message: 'Estado actualizado' });
+        }
 
         let timestampField = null;
         if (estado === 'preparando') timestampField = 'preparado_at';
@@ -293,7 +319,9 @@ router.post('/pedidos/:pedidoId/facturar', async (req, res) => {
             const pedido = pedidos[0];
 
             const [items] = await connection.query(
-                `SELECT * FROM pedido_items WHERE pedido_id = ? AND estado <> 'cancelado'`,
+                // Excluir items cancelados o rechazados de la factura
+                // Relacionado con: estado "rechazado" (database.sql)
+                `SELECT * FROM pedido_items WHERE pedido_id = ? AND estado NOT IN ('cancelado','rechazado')`,
                 [pedidoId]
             );
             if (items.length === 0) throw new Error('Pedido sin items');
@@ -400,7 +428,9 @@ router.put('/pedidos/:pedidoId/mover', async (req, res) => {
 
             // Validar que el destino esté libre: sin pedidos abiertos
             const [abiertosDestino] = await connection.query(
-                `SELECT COUNT(*) as cnt FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado')`,
+                // 'rechazado' se considera finalizado (no pedido activo)
+                // Relacionado con: estado "rechazado" (database.sql)
+                `SELECT COUNT(*) as cnt FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado','rechazado')`,
                 [mesa_destino_id]
             );
             if ((abiertosDestino[0]?.cnt || 0) > 0) {
@@ -412,7 +442,9 @@ router.put('/pedidos/:pedidoId/mover', async (req, res) => {
 
             // Poner libre la mesa origen si no le quedan pedidos abiertos
             const [restantesOrigen] = await connection.query(
-                `SELECT COUNT(*) as cnt FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado')`,
+                // 'rechazado' se considera finalizado (no pedido activo)
+                // Relacionado con: estado "rechazado" (database.sql)
+                `SELECT COUNT(*) as cnt FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado','rechazado')`,
                 [pedido.mesa_id]
             );
             if ((restantesOrigen[0]?.cnt || 0) === 0) {
@@ -447,7 +479,9 @@ router.put('/:mesaId/liberar', async (req, res) => {
 
             // Revisar pedidos abiertos en esa mesa
             const [abiertos] = await connection.query(
-                `SELECT p.id FROM pedidos p WHERE p.mesa_id = ? AND p.estado NOT IN ('cerrado','cancelado') FOR UPDATE`,
+                // 'rechazado' se considera finalizado (no pedido activo)
+                // Relacionado con: estado "rechazado" (database.sql)
+                `SELECT p.id FROM pedidos p WHERE p.mesa_id = ? AND p.estado NOT IN ('cerrado','cancelado','rechazado') FOR UPDATE`,
                 [mesaId]
             );
 
@@ -455,14 +489,24 @@ router.put('/:mesaId/liberar', async (req, res) => {
                 // Verificar que no tengan items distintos de cancelado
                 const ids = abiertos.map(p => p.id);
                 const [items] = await connection.query(
-                    `SELECT COUNT(*) as cnt FROM pedido_items WHERE pedido_id IN (?) AND estado <> 'cancelado'`,
+                    // Consideramos "rechazado" igual que "cancelado" (no es item activo)
+                    // Relacionado con: estado "rechazado" (database.sql)
+                    `SELECT COUNT(*) as cnt FROM pedido_items WHERE pedido_id IN (?) AND estado NOT IN ('cancelado','rechazado')`,
                     [ids]
                 );
                 if ((items[0]?.cnt || 0) > 0) {
                     throw new Error('La mesa tiene items activos, no se puede liberar');
                 }
-                // Si no hay items activos, podemos marcar esos pedidos como cancelados
-                await connection.query(`UPDATE pedidos SET estado = 'cancelado' WHERE id IN (?)`, [ids]);
+                // Si no hay items activos, marcamos esos pedidos como RECHAZADOS (nuevo estado)
+                // y actualizamos items cancelados a rechazados para poder visualizarlos en Cocina.
+                // Relacionado con:
+                // - routes/cocina.js (GET /api/cocina/rechazados)
+                // - views/cocina.ejs (pestaña Rechazados)
+                await connection.query(
+                    `UPDATE pedido_items SET estado = 'rechazado' WHERE pedido_id IN (?) AND estado = 'cancelado'`,
+                    [ids]
+                );
+                await connection.query(`UPDATE pedidos SET estado = 'rechazado' WHERE id IN (?)`, [ids]);
             }
 
             await connection.query(`UPDATE mesas SET estado = 'libre' WHERE id = ?`, [mesaId]);

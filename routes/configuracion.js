@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const multer = require('multer');
+const os = require('os');
+const QRCode = require('qrcode');
 
 // Configuración de multer para memoria
 const upload = multer({
@@ -173,6 +175,176 @@ router.post('/', upload.fields([
 // Eliminar la ruta de impresoras que no se usa
 router.get('/impresoras', (req, res) => {
     res.json([]);
+});
+
+// ===== Vinculación de dispositivos (QR + diagnóstico) =====
+// Relacionado con:
+// - views/configuracion.ejs (apartado "Vincular dispositivos")
+// - middleware/auth.js + server.js (solo administrador accede a esta sección)
+
+function getIpv4Locales() {
+    // Obtiene IPs IPv4 válidas para LAN (evita loopback/internas no útiles)
+    const nets = os.networkInterfaces();
+    const ips = [];
+    Object.values(nets || {}).forEach((ifaces) => {
+        (ifaces || []).forEach((addr) => {
+            if (!addr) return;
+            const family = String(addr.family || '').toLowerCase();
+            const isIpv4 = (family === 'ipv4' || String(addr.family) === '4');
+            if (!isIpv4) return;
+            if (addr.internal) return;
+            const ip = String(addr.address || '').trim();
+            if (!ip) return;
+            ips.push(ip);
+        });
+    });
+    return [...new Set(ips)];
+}
+
+function getPortFromRequest(req) {
+    // Toma el puerto desde Host (ej: 192.168.1.10:3002), con fallback a PORT del proceso.
+    const hostHeader = String(req.get('host') || '').trim();
+    const hostParts = hostHeader.split(':');
+    if (hostParts.length >= 2) {
+        const p = Number(hostParts[hostParts.length - 1]);
+        if (Number.isFinite(p) && p > 0) return p;
+    }
+    const envPort = Number(process.env.PORT || 3002);
+    return Number.isFinite(envPort) && envPort > 0 ? envPort : 3002;
+}
+
+function buildCandidateUrls(req) {
+    const port = getPortFromRequest(req);
+    const protocol = String(req.protocol || 'http').toLowerCase();
+    const urls = [];
+
+    // URL principal local
+    urls.push(`${protocol}://localhost:${port}`);
+
+    // URLs LAN por IP (las que se comparten con celulares/tablets de la misma red)
+    getIpv4Locales().forEach((ip) => {
+        urls.push(`${protocol}://${ip}:${port}`);
+    });
+
+    return [...new Set(urls)];
+}
+
+function guessPreferredUrl(req) {
+    // Preferimos una IP LAN si existe (más útil para vincular dispositivos);
+    // si no, dejamos localhost.
+    const urls = buildCandidateUrls(req);
+    const lanUrl = urls.find((u) => !u.includes('localhost'));
+    return lanUrl || urls[0] || null;
+}
+
+async function runConnectionDiagnostics(req, targetUrl) {
+    const diagnostics = {
+        timestamp: new Date().toISOString(),
+        db_ok: false,
+        server_http_ok: false,
+        server_http_status: null,
+        server_http_error: null,
+        puerto: getPortFromRequest(req),
+        host_header: String(req.get('host') || ''),
+        recommended_url: guessPreferredUrl(req),
+        ips_locales: getIpv4Locales(),
+        posibles_causas: [],
+        recomendaciones: []
+    };
+
+    // 1) Diagnóstico DB (si esto falla, el sistema puede parecer "caído")
+    try {
+        const [rows] = await db.query('SELECT 1 AS ok');
+        diagnostics.db_ok = Boolean(rows && rows[0] && Number(rows[0].ok) === 1);
+    } catch (e) {
+        diagnostics.db_ok = false;
+        diagnostics.posibles_causas.push('La base de datos no está respondiendo.');
+        diagnostics.recomendaciones.push('Verifica que MySQL esté iniciado y que las credenciales de conexión sean correctas.');
+    }
+
+    // 2) Diagnóstico HTTP local al URL objetivo
+    const safeTarget = String(targetUrl || '').trim() || diagnostics.recommended_url;
+    if (!safeTarget) {
+        diagnostics.posibles_causas.push('No se pudo construir una URL válida para pruebas de conexión.');
+        diagnostics.recomendaciones.push('Revisa IP/puerto del servidor y vuelve a generar el QR.');
+        return diagnostics;
+    }
+
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const response = await fetch(safeTarget, {
+            method: 'GET',
+            signal: controller.signal,
+            redirect: 'follow'
+        });
+        clearTimeout(timeout);
+        diagnostics.server_http_ok = response.ok || response.status === 302 || response.status === 401 || response.status === 403;
+        diagnostics.server_http_status = response.status;
+        if (!diagnostics.server_http_ok) {
+            diagnostics.posibles_causas.push(`El servidor respondió con estado HTTP ${response.status}.`);
+        }
+    } catch (e) {
+        diagnostics.server_http_ok = false;
+        diagnostics.server_http_error = String(e && e.message ? e.message : e);
+        diagnostics.posibles_causas.push('No fue posible abrir el servidor por HTTP desde esta máquina.');
+        diagnostics.recomendaciones.push('Confirma que la app esté encendida y escuchando en el puerto configurado.');
+        diagnostics.recomendaciones.push('Si otros dispositivos no conectan, revisa firewall de Windows y permite Node.js en red privada.');
+    }
+
+    // 3) Reglas prácticas para red local
+    if ((diagnostics.ips_locales || []).length === 0) {
+        diagnostics.posibles_causas.push('No se detectaron IPs LAN en este equipo.');
+        diagnostics.recomendaciones.push('Conecta el servidor a WiFi/LAN y evita usar solo localhost.');
+    } else {
+        diagnostics.recomendaciones.push('Asegura que el dispositivo cliente y el servidor estén en la misma red WiFi/LAN.');
+    }
+    diagnostics.recomendaciones.push(`Si el cliente no abre la página, prueba manualmente: ${safeTarget}`);
+
+    return diagnostics;
+}
+
+// GET /configuracion/conexion-info
+// Devuelve URLs candidatas + QR base64 de la URL recomendada.
+router.get('/conexion-info', async (req, res) => {
+    try {
+        const urls = buildCandidateUrls(req);
+        const preferred = guessPreferredUrl(req);
+        let qr_data_url = null;
+
+        if (preferred) {
+            qr_data_url = await QRCode.toDataURL(preferred, {
+                errorCorrectionLevel: 'M',
+                margin: 1,
+                width: 280
+            });
+        }
+
+        res.json({
+            host_header: String(req.get('host') || ''),
+            puerto: getPortFromRequest(req),
+            ips_locales: getIpv4Locales(),
+            urls,
+            preferred_url: preferred,
+            qr_data_url: qr_data_url
+        });
+    } catch (error) {
+        console.error('Error al generar info de conexión:', error);
+        res.status(500).json({ error: 'No se pudo generar la información de conexión' });
+    }
+});
+
+// GET /configuracion/diagnostico?target_url=http://192.168.1.10:3002
+// Ejecuta diagnóstico de conectividad y devuelve causas/recomendaciones.
+router.get('/diagnostico', async (req, res) => {
+    try {
+        const target_url = String(req.query.target_url || '').trim();
+        const diagnostics = await runConnectionDiagnostics(req, target_url);
+        res.json(diagnostics);
+    } catch (error) {
+        console.error('Error al diagnosticar conexión:', error);
+        res.status(500).json({ error: 'No se pudo ejecutar el diagnóstico de conexión' });
+    }
 });
 
 module.exports = router; 
