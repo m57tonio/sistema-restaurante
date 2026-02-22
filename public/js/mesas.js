@@ -267,6 +267,14 @@ $(function() {
 
   // Helpers UI
   function formatear(valor){return `$${Number(valor||0).toLocaleString('es-CO')}`}
+  function isItemAnulable(estado){
+    const e = String(estado || '').toLowerCase();
+    return ['pendiente','enviado','preparando','listo'].includes(e);
+  }
+  function isItemExcluidoDeTotal(estado){
+    const e = String(estado || '').toLowerCase();
+    return ['cancelado','rechazado'].includes(e);
+  }
   function renderItems(){
     const tbody = $('#tbodyItems');
     tbody.empty();
@@ -275,23 +283,33 @@ $(function() {
       const cantidad = Number(it.cantidad || 0);
       const precio = Number((it.precio_unitario != null ? it.precio_unitario : it.precio) || 0);
       const subtotal = Number(it.subtotal != null ? it.subtotal : (cantidad * precio));
-      total += subtotal;
+      const estadoItem = String(it.estado || '').toLowerCase();
+      if (!isItemExcluidoDeTotal(estadoItem)) total += subtotal;
       // Mostrar nota debajo del producto (si existe), útil para "Padre - Hijos / Obs."
       // Relacionado con: public/js/mesas.js (selección de hijos) y Cocina (muestra it.nota)
       const nombre = escapeHtml(it.producto_nombre || it.nombre || it.producto_id);
       const nota = String(it.nota || '').trim();
       const notaHtml = nota ? `<div class="small text-muted mt-1">${escapeHtml(nota)}</div>` : '';
+      const canEdit = estadoItem === 'pendiente';
+      const canCancelar = isItemAnulable(estadoItem);
       tbody.append(`
         <tr>
           <td>
             <div>${nombre}</div>
             ${notaHtml}
+            <div class="small mt-1">
+              <span class="badge text-bg-${canEdit ? 'secondary' : 'light'}">${escapeHtml(estadoItem || 'sin estado')}</span>
+            </div>
           </td>
           <td class="text-end">${cantidad}</td>
           <td class="text-end">${formatear(precio)}</td>
           <td class="text-end">${formatear(subtotal)}</td>
           <td class="text-end">
-            <button class="btn btn-sm btn-outline-danger" data-idx="${idx}"><i class="bi bi-trash"></i></button>
+            <div class="btn-group btn-group-sm" role="group" aria-label="acciones item">
+              ${canEdit ? `<button class="btn btn-outline-primary" data-action="editar-item" data-idx="${idx}" title="Editar item"><i class="bi bi-pencil-square"></i></button>` : ''}
+              ${canEdit ? `<button class="btn btn-outline-danger" data-action="eliminar-item" data-idx="${idx}" title="Eliminar item"><i class="bi bi-trash"></i></button>` : ''}
+              ${canCancelar ? `<button class="btn btn-outline-warning" data-action="cancelar-item" data-idx="${idx}" title="Cancelar item"><i class="bi bi-x-octagon"></i></button>` : ''}
+            </div>
           </td>
         </tr>
       `);
@@ -517,13 +535,184 @@ $(function() {
     });
   }
 
-  // Eliminar item del pedido
-  // Relacionado con: routes/mesas.js (DELETE /api/mesas/items/:itemId)
-  $(document).on('click', '.btn-outline-danger[data-idx]', async function(e){
+  // Cargar hijos configurados de un producto (items preferidos, productos como fallback).
+  // Relacionado con:
+  // - routes/productos.js (/hijos-items y /hijos)
+  // - edición rápida de pedidos con hijos
+  async function cargarHijosProducto(productoId){
+    let hijosItems = [];
+    let hijosProductos = [];
+    try {
+      const r = await fetch(`/api/productos/${encodeURIComponent(productoId)}/hijos-items`);
+      if (r.ok) {
+        const data = await r.json();
+        hijosItems = Array.isArray(data) ? data : [];
+      }
+    } catch (_) { hijosItems = []; }
+
+    if (!hijosItems || hijosItems.length === 0) {
+      try {
+        const r2 = await fetch(`/api/productos/${encodeURIComponent(productoId)}/hijos`);
+        if (r2.ok) {
+          const data2 = await r2.json();
+          hijosProductos = Array.isArray(data2) ? data2 : [];
+        }
+      } catch (_) { hijosProductos = []; }
+    }
+
+    if (Array.isArray(hijosItems) && hijosItems.length > 0) {
+      return hijosItems.map(it => ({ key: `i_${it.id}`, label: String(it.nombre || '').trim() })).filter(x => x.label);
+    }
+    return (hijosProductos || []).map(pr => ({ key: `p_${pr.id}`, label: String(pr.nombre || '').trim() })).filter(x => x.label);
+  }
+
+  // Intenta descomponer una nota con formato "Hijo1 / Hijo2 / Obs. texto".
+  // Si encuentra texto no coincidente con hijos, lo conserva en observación.
+  // Relacionado con: selección/edición de hijos en pedido.
+  function parseNotaConHijos(nota, listaHijos){
+    const notaRaw = String(nota || '').trim();
+    const normalize = (s) => String(s || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+    const byLabel = new Map((listaHijos || []).map(h => [normalize(h.label), String(h.key)]));
+
+    if (!notaRaw) return { selectedKeys: [], obs: '' };
+
+    const parts = notaRaw.split('/').map(p => String(p || '').trim()).filter(Boolean);
+    const selected = [];
+    const extras = [];
+    let obs = '';
+
+    parts.forEach(p => {
+      if (/^obs\./i.test(p)) {
+        const txt = p.replace(/^obs\.\s*/i, '').trim();
+        if (txt) obs = txt;
+        return;
+      }
+      const key = byLabel.get(normalize(p));
+      if (key) selected.push(key);
+      else extras.push(p);
+    });
+
+    if (extras.length > 0) {
+      obs = obs ? `${extras.join(' / ')} / ${obs}` : extras.join(' / ');
+    }
+    return { selectedKeys: selected, obs };
+  }
+
+  // Editar item del pedido (solo estado pendiente)
+  // Relacionado con: routes/mesas.js (PUT /api/mesas/items/:itemId)
+  $(document).on('click', '[data-action="editar-item"]', async function(e){
     e.preventDefault();
     const idx = Number($(this).data('idx'));
     const item = items[idx];
     if(!item || !item.id) return;
+    if(String(item.estado || '').toLowerCase() !== 'pendiente'){
+      return Swal.fire({icon:'info', title:'Solo puedes editar items pendientes'});
+    }
+
+    const hijos = await cargarHijosProducto(item.producto_id);
+    const hasHijos = Array.isArray(hijos) && hijos.length > 0;
+    const notaParsed = parseNotaConHijos(item.nota, hijos);
+    const selectedSet = new Set(notaParsed.selectedKeys);
+
+    const result = await runWithOffcanvasHidden(async () => {
+      return await Swal.fire({
+        title: 'Editar producto',
+        html: `
+          <div class="text-start">
+            <label class="form-label small">Cantidad</label>
+            <input id="editItemCantidad" type="number" class="form-control mb-2" step="0.1" min="0.1" value="${Number(item.cantidad || 1)}">
+
+            ${hasHijos ? `
+              <label class="form-label small mb-1">Hijos</label>
+              <div class="border rounded p-2 mb-2" style="max-height:220px; overflow:auto;">
+                ${hijos.map(h => {
+                  const key = String(h.key);
+                  const checkboxId = `edH_${key.replace(/[^a-zA-Z0-9_]/g,'_')}`;
+                  const checked = selectedSet.has(key) ? 'checked' : '';
+                  return `
+                    <div class="form-check">
+                      <input class="form-check-input edit-item-hijo" type="checkbox" value="${escapeHtml(key)}" id="${checkboxId}" ${checked}>
+                      <label class="form-check-label" for="${checkboxId}">${escapeHtml(h.label)}</label>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+              <label class="form-label small">Observación (opcional)</label>
+              <input id="editItemObs" type="text" class="form-control" value="${escapeHtml(String(notaParsed.obs || ''))}" placeholder="Ej: Poco arroz">
+            ` : `
+              <label class="form-label small">Nota para cocina (opcional)</label>
+              <input id="editItemNota" type="text" class="form-control" value="${escapeHtml(String(item.nota || ''))}">
+            `}
+          </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: 'Guardar',
+        cancelButtonText: 'Cancelar',
+        didOpen: () => {
+          const inputIds = hasHijos ? ['editItemCantidad', 'editItemObs'] : ['editItemCantidad', 'editItemNota'];
+          inputIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            ['keydown','keyup','keypress','paste','copy','cut','contextmenu'].forEach(evt => {
+              el.addEventListener(evt, (ev) => ev.stopPropagation());
+            });
+          });
+        },
+        preConfirm: () => {
+          const cantidad = Number(document.getElementById('editItemCantidad')?.value || 0);
+          if(!Number.isFinite(cantidad) || cantidad <= 0){
+            Swal.showValidationMessage('La cantidad debe ser mayor a 0');
+            return false;
+          }
+
+          if (hasHijos) {
+            const obs = String(document.getElementById('editItemObs')?.value || '').trim();
+            const hijosSel = Array.from(document.querySelectorAll('.edit-item-hijo:checked'))
+              .map(ch => String(ch.value || '').trim())
+              .filter(Boolean);
+            const mapLabel = new Map(hijos.map(h => [String(h.key), String(h.label || '').trim()]));
+            const nombresSel = hijosSel.map(k => mapLabel.get(k) || '').filter(Boolean);
+            const parts = [...nombresSel];
+            if (obs) parts.push(`Obs. ${obs}`);
+            return { cantidad, nota: parts.join(' / ') };
+          }
+
+          const nota = String(document.getElementById('editItemNota')?.value || '').trim();
+          return { cantidad, nota };
+        }
+      });
+    });
+    if(!result.isConfirmed) return;
+
+    try{
+      const resp = await fetch(`/api/mesas/items/${item.id}`, {
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(result.value)
+      });
+      const data = await resp.json();
+      if(!resp.ok) throw new Error(data.error || 'No se pudo editar el item');
+      await cargarPedido(pedidoActual.id);
+      Swal.fire({icon:'success', title:'Item actualizado'});
+    }catch(err){
+      Swal.fire({icon:'error', title: err.message || 'No se pudo editar el item'});
+    }
+  });
+
+  // Eliminar item del pedido (solo estado pendiente)
+  // Relacionado con: routes/mesas.js (DELETE /api/mesas/items/:itemId)
+  $(document).on('click', '[data-action="eliminar-item"]', async function(e){
+    e.preventDefault();
+    const idx = Number($(this).data('idx'));
+    const item = items[idx];
+    if(!item || !item.id) return;
+    if(String(item.estado || '').toLowerCase() !== 'pendiente'){
+      return Swal.fire({icon:'info', title:'Solo puedes eliminar items pendientes'});
+    }
     
     const confirmacion = await Swal.fire({
       title: '¿Eliminar producto?',
@@ -547,10 +736,45 @@ $(function() {
     }
   });
 
+  // Cancelar item del pedido desde mesa (mesero/admin)
+  // Relacionado con: routes/mesas.js (PUT /api/mesas/items/:itemId/cancelar)
+  $(document).on('click', '[data-action="cancelar-item"]', async function(e){
+    e.preventDefault();
+    const idx = Number($(this).data('idx'));
+    const item = items[idx];
+    if(!item || !item.id) return;
+    if(!isItemAnulable(item.estado)){
+      return Swal.fire({icon:'info', title:'Este item no se puede cancelar en su estado actual'});
+    }
+
+    const confirmacion = await Swal.fire({
+      title: '¿Cancelar producto?',
+      text: `Se cancelará ${item.producto_nombre || item.nombre || 'este producto'} y se verá en Cocina como rechazado.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Sí, cancelar',
+      cancelButtonText: 'No'
+    });
+    if(!confirmacion.isConfirmed) return;
+
+    try{
+      const resp = await fetch(`/api/mesas/items/${item.id}/cancelar`, { method:'PUT', headers:{'Content-Type':'application/json'} });
+      const data = await resp.json();
+      if(!resp.ok) throw new Error(data.error || 'No se pudo cancelar el item');
+      await cargarPedido(pedidoActual.id);
+      Swal.fire({icon:'success', title:'Producto cancelado'});
+    }catch(err){
+      Swal.fire({icon:'error', title: err.message || 'No se pudo cancelar el producto'});
+    }
+  });
+
   // Enviar todos los items pendientes a cocina
   $('#btnEnviarCocina').on('click', async function(){
     try{
       const pendientes = items.filter(i => i.estado === 'pendiente');
+      if(pendientes.length === 0){
+        return Swal.fire({icon:'info', title:'No hay items pendientes para enviar'});
+      }
       for(const it of pendientes){
         await fetch(`/api/mesas/items/${it.id}/enviar`, { method:'PUT' });
       }
@@ -628,6 +852,7 @@ $(function() {
 
       // Total del pedido basado en items actuales (mismo cálculo del render)
       const totalPedido = (items || []).reduce((acc, it) => {
+        if (isItemExcluidoDeTotal(it.estado)) return acc;
         const cantidad = Number(it.cantidad || 0);
         const precio = Number((it.precio_unitario != null ? it.precio_unitario : it.precio) || 0);
         const subtotal = Number(it.subtotal != null ? it.subtotal : (cantidad * precio));
@@ -704,7 +929,7 @@ $(function() {
 
   function buildPedidoResumenHtml(){
     let total = 0;
-    const rows = (items||[]).map(it => {
+    const rows = (items||[]).filter(it => !isItemExcluidoDeTotal(it.estado)).map(it => {
       const cantidad = Number(it.cantidad||0);
       const precio = Number((it.precio_unitario!=null?it.precio_unitario:it.precio)||0);
       const subtotal = Number(it.subtotal!=null?it.subtotal:(cantidad*precio));
@@ -990,6 +1215,40 @@ $(function() {
       Swal.fire({ icon:'success', title:'Mesa liberada' }).then(()=> location.reload());
     }catch(err){
       Swal.fire({ icon:'error', title: err.message });
+    }
+  });
+
+  // Limpiar items rechazados/cancelados del pedido actual
+  // Relacionado con:
+  // - routes/mesas.js (DELETE /api/mesas/pedidos/:pedidoId/items/rechazados)
+  // - views/mesas.ejs (btnLimpiarRechazadosHeader)
+  $('#btnLimpiarRechazadosHeader').on('click', async function(){
+    if(!pedidoActual || !pedidoActual.id) return;
+    const ok = await Swal.fire({
+      title: '¿Limpiar rechazados?',
+      text: 'Se eliminarán del pedido los items rechazados/cancelados.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Sí, limpiar',
+      cancelButtonText: 'Cancelar'
+    });
+    if(!ok.isConfirmed) return;
+    try{
+      const r = await fetch(`/api/mesas/pedidos/${pedidoActual.id}/items/rechazados`, { method:'DELETE' });
+      const data = await r.json();
+      if(!r.ok) throw new Error(data.error || 'No se pudo limpiar');
+
+      // Si el pedido quedó vacío y fue cancelado, cerramos panel y refrescamos tarjetas.
+      // Relacionado con: routes/mesas.js (pedido_cancelado=true cuando no quedan items)
+      if (data && data.pedido_cancelado) {
+        try { bootstrap.Offcanvas.getOrCreateInstance(document.getElementById('canvasPedido')).hide(); } catch (_) {}
+        await refreshMesas();
+      } else {
+        await cargarPedido(pedidoActual.id);
+      }
+      Swal.fire({ icon:'success', title:'Rechazados limpiados' });
+    }catch(err){
+      Swal.fire({ icon:'error', title: err.message || 'No se pudo limpiar' });
     }
   });
 

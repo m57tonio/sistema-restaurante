@@ -7,17 +7,80 @@ const db = require('../db');
 // - Expone endpoints para abrir pedidos por mesa, agregar items y enviarlos a cocina
 // - Se monta en server.js tanto en '/mesas' como en '/api/mesas'
 
+// Sincroniza estado de mesa en función de items activos:
+// - Si no hay items activos en pedidos abiertos => libre
+// - Si hay items activos => ocupada
+// Relacionado con:
+// - views/mesas.ejs (badge de estado)
+// - public/js/mesas.js (refreshMesas)
+// - requerimiento funcional: evitar mesas "ocupadas" sin productos
+async function syncMesaEstadoByItems(connection, mesaId) {
+    const [rows] = await connection.query(
+        `SELECT COUNT(*) AS cnt
+         FROM pedido_items i
+         JOIN pedidos p ON p.id = i.pedido_id
+         WHERE p.mesa_id = ?
+           AND p.estado NOT IN ('cerrado','cancelado','rechazado')
+           AND i.estado NOT IN ('cancelado','rechazado')`,
+        [mesaId]
+    );
+    const activos = Number(rows?.[0]?.cnt || 0);
+    await connection.query(
+        `UPDATE mesas
+         SET estado = ?
+         WHERE id = ?
+           AND estado IN ('libre','ocupada')`,
+        [activos > 0 ? 'ocupada' : 'libre', mesaId]
+    );
+}
+
+// Obtiene mesa_id de un item para operaciones posteriores (ej. sincronizar estado).
+// Relacionado con: syncMesaEstadoByItems() y rutas de actualización/eliminación de items.
+async function getMesaIdByItem(connection, itemId) {
+    const [rows] = await connection.query(
+        `SELECT p.mesa_id
+         FROM pedido_items i
+         JOIN pedidos p ON p.id = i.pedido_id
+         WHERE i.id = ?
+         LIMIT 1`,
+        [itemId]
+    );
+    if (!rows.length) return null;
+    return rows[0].mesa_id;
+}
+
 // GET /mesas - Página de gestión de mesas
 router.get('/', async (req, res) => {
     try {
         // Trae el listado de mesas y si tienen pedidos abiertos (para mostrar estado)
         const [mesas] = await db.query(`
-            SELECT m.*, (
+            SELECT m.*,
+            (
                 SELECT COUNT(*) FROM pedidos p 
                 -- 'rechazado' se considera finalizado (no pedido activo)
                 -- Relacionado con: estado "rechazado" solicitado (ver database.sql)
                 WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado','rechazado')
-            ) AS pedidos_abiertos
+            ) AS pedidos_abiertos,
+            (
+                SELECT COUNT(*)
+                FROM pedido_items i
+                JOIN pedidos p2 ON p2.id = i.pedido_id
+                WHERE p2.mesa_id = m.id
+                  AND p2.estado NOT IN ('cerrado','cancelado','rechazado')
+                  AND i.estado NOT IN ('cancelado','rechazado')
+            ) AS items_activos,
+            CASE
+                WHEN m.estado IN ('reservada','bloqueada') THEN m.estado
+                WHEN (
+                    SELECT COUNT(*)
+                    FROM pedido_items i2
+                    JOIN pedidos p3 ON p3.id = i2.pedido_id
+                    WHERE p3.mesa_id = m.id
+                      AND p3.estado NOT IN ('cerrado','cancelado','rechazado')
+                      AND i2.estado NOT IN ('cancelado','rechazado')
+                ) > 0 THEN 'ocupada'
+                ELSE 'libre'
+            END AS estado
             FROM mesas m
             ORDER BY m.numero
         `);
@@ -35,12 +98,33 @@ router.get('/', async (req, res) => {
 router.get('/listar', async (req, res) => {
     try {
         const [mesas] = await db.query(`
-            SELECT m.*, (
+            SELECT m.*,
+            (
                 SELECT COUNT(*) FROM pedidos p 
                 -- 'rechazado' se considera finalizado (no pedido activo)
                 -- Relacionado con: estado "rechazado" solicitado (ver database.sql)
                 WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado','rechazado')
-            ) AS pedidos_abiertos
+            ) AS pedidos_abiertos,
+            (
+                SELECT COUNT(*)
+                FROM pedido_items i
+                JOIN pedidos p2 ON p2.id = i.pedido_id
+                WHERE p2.mesa_id = m.id
+                  AND p2.estado NOT IN ('cerrado','cancelado','rechazado')
+                  AND i.estado NOT IN ('cancelado','rechazado')
+            ) AS items_activos,
+            CASE
+                WHEN m.estado IN ('reservada','bloqueada') THEN m.estado
+                WHEN (
+                    SELECT COUNT(*)
+                    FROM pedido_items i2
+                    JOIN pedidos p3 ON p3.id = i2.pedido_id
+                    WHERE p3.mesa_id = m.id
+                      AND p3.estado NOT IN ('cerrado','cancelado','rechazado')
+                      AND i2.estado NOT IN ('cancelado','rechazado')
+                ) > 0 THEN 'ocupada'
+                ELSE 'libre'
+            END AS estado
             FROM mesas m
             ORDER BY m.numero
         `);
@@ -141,6 +225,7 @@ router.post('/abrir', async (req, res) => {
                 [mesa_id]
             );
             if (existentes.length > 0) {
+                await syncMesaEstadoByItems(connection, mesa_id);
                 await connection.commit();
                 connection.release();
                 return res.json({ pedido: existentes[0] });
@@ -151,10 +236,9 @@ router.post('/abrir', async (req, res) => {
                 [mesa_id, cliente_id || null, notas || null]
             );
 
-            await connection.query(
-                `UPDATE mesas SET estado = 'ocupada' WHERE id = ?`,
-                [mesa_id]
-            );
+            // Importante: abrir pedido no fuerza "ocupada" si aún no hay items.
+            // La mesa cambia automáticamente según el conteo real de productos.
+            await syncMesaEstadoByItems(connection, mesa_id);
 
             await connection.commit();
             connection.release();
@@ -200,35 +284,151 @@ router.post('/pedidos/:pedidoId/items', async (req, res) => {
             return res.status(400).json({ error: 'producto_id, cantidad y precio son requeridos' });
         }
         const subtotal = Number(cantidad) * Number(precio);
-        const [result] = await db.query(
-            `INSERT INTO pedido_items (pedido_id, producto_id, cantidad, unidad_medida, precio_unitario, subtotal, estado, nota)
-             VALUES (?, ?, ?, ?, ?, ?, 'pendiente', ?)` ,
-            [pedidoId, producto_id, cantidad, unidad || 'UND', precio, subtotal, nota || null]
-        );
-        res.status(201).json({ id: result.insertId });
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+            const [result] = await connection.query(
+                `INSERT INTO pedido_items (pedido_id, producto_id, cantidad, unidad_medida, precio_unitario, subtotal, estado, nota)
+                 VALUES (?, ?, ?, ?, ?, ?, 'pendiente', ?)` ,
+                [pedidoId, producto_id, cantidad, unidad || 'UND', precio, subtotal, nota || null]
+            );
+            const [pedidoRows] = await connection.query('SELECT mesa_id FROM pedidos WHERE id = ? LIMIT 1', [pedidoId]);
+            if (pedidoRows.length > 0) {
+                await syncMesaEstadoByItems(connection, pedidoRows[0].mesa_id);
+            }
+            await connection.commit();
+            connection.release();
+            res.status(201).json({ id: result.insertId });
+        } catch (err) {
+            await connection.rollback();
+            connection.release();
+            throw err;
+        }
     } catch (error) {
         console.error('Error al agregar item:', error);
         res.status(500).json({ error: 'Error al agregar item' });
     }
 });
 
+// PUT /mesas/items/:itemId - API: editar item del pedido (solo pendiente y antes de enviar)
+// Relacionado con:
+// - public/js/mesas.js (botón "Editar" en cada item pendiente)
+// - requerimiento funcional: poder editar antes de enviar a cocina
+router.put('/items/:itemId', async (req, res) => {
+    try {
+        const itemId = req.params.itemId;
+        const { cantidad, nota } = req.body || {};
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+            const [rows] = await connection.query(
+                `SELECT i.id, i.estado, i.cantidad, i.precio_unitario, i.nota
+                 FROM pedido_items i
+                 WHERE i.id = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [itemId]
+            );
+            if (!rows.length) {
+                throw new Error('Item no encontrado');
+            }
+            const actual = rows[0];
+            if (String(actual.estado || '').toLowerCase() !== 'pendiente') {
+                throw new Error('Solo se pueden editar items pendientes (antes de enviar a cocina)');
+            }
+
+            const nuevaCantidad = (cantidad != null && cantidad !== '') ? Number(cantidad) : Number(actual.cantidad || 0);
+            if (!Number.isFinite(nuevaCantidad) || nuevaCantidad <= 0) {
+                throw new Error('La cantidad debe ser mayor a 0');
+            }
+            const nuevaNota = (nota != null) ? String(nota).trim() : String(actual.nota || '').trim();
+            const precio = Number(actual.precio_unitario || 0);
+            const subtotal = nuevaCantidad * precio;
+
+            await connection.query(
+                `UPDATE pedido_items
+                 SET cantidad = ?, subtotal = ?, nota = ?
+                 WHERE id = ? AND estado = 'pendiente'`,
+                [nuevaCantidad, subtotal, nuevaNota || null, itemId]
+            );
+
+            const mesaId = await getMesaIdByItem(connection, itemId);
+            if (mesaId) {
+                await syncMesaEstadoByItems(connection, mesaId);
+            }
+
+            await connection.commit();
+            connection.release();
+            res.json({ message: 'Item actualizado' });
+        } catch (err) {
+            await connection.rollback();
+            connection.release();
+            const msg = String(err?.message || 'Error al editar item');
+            if (msg.includes('no encontrado')) {
+                return res.status(404).json({ error: msg });
+            }
+            if (msg.includes('pendientes') || msg.includes('cantidad')) {
+                return res.status(400).json({ error: msg });
+            }
+            throw err;
+        }
+    } catch (error) {
+        console.error('Error al editar item:', error);
+        res.status(500).json({ error: 'Error al editar item' });
+    }
+});
+
 // DELETE /mesas/items/:itemId - API: eliminar item del pedido
 // Relacionado con: public/js/mesas.js (función eliminarItem)
-// IMPORTANTE: Esta ruta debe ir ANTES de las rutas PUT más específicas para evitar conflictos
+// IMPORTANTE: solo permite eliminar items en estado "pendiente"
 router.delete('/items/:itemId', async (req, res) => {
     try {
         const itemId = req.params.itemId;
         console.log(`DELETE /api/mesas/items/${itemId} - Eliminando item`);
-        const [result] = await db.query(
-            `DELETE FROM pedido_items WHERE id = ?`,
-            [itemId]
-        );
-        if (result.affectedRows === 0) {
-            console.log(`Item ${itemId} no encontrado`);
-            return res.status(404).json({ error: 'Item no encontrado' });
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+            const [itemRows] = await connection.query(
+                `SELECT i.id, i.estado, p.mesa_id
+                 FROM pedido_items i
+                 JOIN pedidos p ON p.id = i.pedido_id
+                 WHERE i.id = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [itemId]
+            );
+            if (!itemRows.length) {
+                console.log(`Item ${itemId} no encontrado`);
+                await connection.rollback();
+                connection.release();
+                return res.status(404).json({ error: 'Item no encontrado' });
+            }
+            if (String(itemRows[0].estado || '').toLowerCase() !== 'pendiente') {
+                await connection.rollback();
+                connection.release();
+                return res.status(400).json({ error: 'Solo se pueden eliminar items pendientes (antes de enviar)' });
+            }
+
+            const [result] = await connection.query(
+                `DELETE FROM pedido_items WHERE id = ? AND estado = 'pendiente'`,
+                [itemId]
+            );
+            if ((result?.affectedRows || 0) === 0) {
+                await connection.rollback();
+                connection.release();
+                return res.status(400).json({ error: 'No se pudo eliminar el item' });
+            }
+
+            await syncMesaEstadoByItems(connection, itemRows[0].mesa_id);
+            await connection.commit();
+            connection.release();
+            console.log(`Item ${itemId} eliminado exitosamente`);
+            res.json({ message: 'Item eliminado' });
+        } catch (err) {
+            await connection.rollback();
+            connection.release();
+            throw err;
         }
-        console.log(`Item ${itemId} eliminado exitosamente`);
-        res.json({ message: 'Item eliminado' });
     } catch (error) {
         console.error('Error al eliminar item:', error);
         res.status(500).json({ error: 'Error al eliminar item' });
@@ -240,14 +440,143 @@ router.put('/items/:itemId/enviar', async (req, res) => {
     try {
         const itemId = req.params.itemId;
         const [result] = await db.query(
-            `UPDATE pedido_items SET estado = 'enviado', enviado_at = NOW() WHERE id = ?`,
+            `UPDATE pedido_items
+             SET estado = 'enviado', enviado_at = NOW()
+             WHERE id = ? AND estado = 'pendiente'`,
             [itemId]
         );
-        if (result.affectedRows === 0) return res.status(404).json({ error: 'Item no encontrado' });
+        if (result.affectedRows === 0) return res.status(400).json({ error: 'Solo se pueden enviar items pendientes' });
         res.json({ message: 'Item enviado a cocina' });
     } catch (error) {
         console.error('Error al enviar item:', error);
         res.status(500).json({ error: 'Error al enviar item' });
+    }
+});
+
+// PUT /mesas/items/:itemId/cancelar - API: cancelar item desde Mesa (mesero/admin)
+// Reglas:
+// - Permite cancelar items en estados operativos: pendiente, enviado, preparando, listo
+// - Se marca como "rechazado" para que sea visible en Cocina (tab Rechazados)
+// Relacionado con:
+// - public/js/mesas.js (botón Cancelar en la mesa)
+// - routes/cocina.js (GET /api/cocina/rechazados)
+router.put('/items/:itemId/cancelar', async (req, res) => {
+    try {
+        const itemId = req.params.itemId;
+        const rol = String(req.session?.user?.rol || '').toLowerCase();
+        if (!['mesero', 'administrador'].includes(rol)) {
+            return res.status(403).json({ error: 'No autorizado para cancelar items desde mesa' });
+        }
+
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+            const [result] = await connection.query(
+                `UPDATE pedido_items
+                 SET estado = 'rechazado'
+                 WHERE id = ?
+                   AND estado IN ('pendiente','enviado','preparando','listo')`,
+                [itemId]
+            );
+            if ((result?.affectedRows || 0) === 0) {
+                await connection.rollback();
+                connection.release();
+                return res.status(400).json({ error: 'No se pudo cancelar: estado no permitido o item no encontrado' });
+            }
+
+            const mesaId = await getMesaIdByItem(connection, itemId);
+            if (mesaId) await syncMesaEstadoByItems(connection, mesaId);
+
+            await connection.commit();
+            connection.release();
+            res.json({ message: 'Item cancelado' });
+        } catch (err) {
+            await connection.rollback();
+            connection.release();
+            throw err;
+        }
+    } catch (error) {
+        console.error('Error al cancelar item desde mesa:', error);
+        res.status(500).json({ error: 'Error al cancelar item' });
+    }
+});
+
+// DELETE /mesas/pedidos/:pedidoId/items/rechazados - limpiar items rechazados/cancelados de un pedido
+// Reglas:
+// - Solo mesero/admin puede ejecutar limpieza desde la mesa
+// - Borra items en estado final no facturable: rechazado/cancelado
+// - Si el pedido queda sin items, lo marca como cancelado para que la mesa quede limpia
+// Relacionado con:
+// - public/js/mesas.js (botón "Limpiar rechazados")
+// - views/mesas.ejs (controles del offcanvas)
+router.delete('/pedidos/:pedidoId/items/rechazados', async (req, res) => {
+    try {
+        const pedidoId = req.params.pedidoId;
+        const rol = String(req.session?.user?.rol || '').toLowerCase();
+        if (!['mesero', 'administrador'].includes(rol)) {
+            return res.status(403).json({ error: 'No autorizado para limpiar items rechazados' });
+        }
+
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+
+            const [pedRows] = await connection.query(
+                `SELECT id, mesa_id, estado
+                 FROM pedidos
+                 WHERE id = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [pedidoId]
+            );
+            if (!pedRows.length) {
+                await connection.rollback();
+                connection.release();
+                return res.status(404).json({ error: 'Pedido no encontrado' });
+            }
+            const pedido = pedRows[0];
+
+            const [result] = await connection.query(
+                `DELETE FROM pedido_items
+                 WHERE pedido_id = ?
+                   AND estado IN ('rechazado','cancelado')`,
+                [pedidoId]
+            );
+
+            const [restantes] = await connection.query(
+                `SELECT COUNT(*) AS cnt
+                 FROM pedido_items
+                 WHERE pedido_id = ?`,
+                [pedidoId]
+            );
+            const quedanItems = Number(restantes?.[0]?.cnt || 0);
+
+            if (quedanItems === 0 && !['cerrado', 'cancelado', 'rechazado'].includes(String(pedido.estado || '').toLowerCase())) {
+                await connection.query(
+                    `UPDATE pedidos
+                     SET estado = 'cancelado', total = 0
+                     WHERE id = ?`,
+                    [pedidoId]
+                );
+            }
+
+            await syncMesaEstadoByItems(connection, pedido.mesa_id);
+            await connection.commit();
+            connection.release();
+
+            res.json({
+                message: 'Items rechazados limpiados',
+                eliminados: Number(result?.affectedRows || 0),
+                pedido_cancelado: quedanItems === 0
+            });
+        } catch (err) {
+            await connection.rollback();
+            connection.release();
+            throw err;
+        }
+    } catch (error) {
+        console.error('Error al limpiar items rechazados:', error);
+        res.status(500).json({ error: 'Error al limpiar items rechazados' });
     }
 });
 
@@ -276,6 +605,13 @@ router.put('/items/:itemId/estado', async (req, res) => {
             if ((resultServido?.affectedRows || 0) === 0) {
                 return res.status(400).json({ error: 'Solo se puede marcar como entregado cuando el pedido está listo' });
             }
+            const connection = await db.getConnection();
+            try {
+                const mesaId = await getMesaIdByItem(connection, itemId);
+                if (mesaId) await syncMesaEstadoByItems(connection, mesaId);
+            } finally {
+                connection.release();
+            }
             return res.json({ message: 'Estado actualizado' });
         }
 
@@ -296,6 +632,13 @@ router.put('/items/:itemId/estado', async (req, res) => {
             );
         }
 
+        const connection = await db.getConnection();
+        try {
+            const mesaId = await getMesaIdByItem(connection, itemId);
+            if (mesaId) await syncMesaEstadoByItems(connection, mesaId);
+        } finally {
+            connection.release();
+        }
         res.json({ message: 'Estado actualizado' });
     } catch (error) {
         console.error('Error al actualizar estado de item:', error);

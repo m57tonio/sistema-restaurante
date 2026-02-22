@@ -57,7 +57,7 @@ $(function(){
   }
 
   async function cargarCola(){
-    const resp = await fetch('/api/cocina/cola');
+    const resp = await fetch(`/api/cocina/cola?_=${Date.now()}`, { cache: 'no-store' });
     const items = await resp.json();
     allItems = Array.isArray(items) ? items : [];
     render();
@@ -69,7 +69,8 @@ $(function(){
     const params = new URLSearchParams();
     if(desde) params.set('desde', desde);
     if(hasta) params.set('hasta', hasta);
-    const resp = await fetch(`/api/cocina/entregados?${params.toString()}`);
+    params.set('_', String(Date.now()));
+    const resp = await fetch(`/api/cocina/entregados?${params.toString()}`, { cache: 'no-store' });
     const items = await resp.json();
     entregadosItems = Array.isArray(items) ? items : [];
     render();
@@ -81,7 +82,8 @@ $(function(){
     const params = new URLSearchParams();
     if(desde) params.set('desde', desde);
     if(hasta) params.set('hasta', hasta);
-    const resp = await fetch(`/api/cocina/rechazados?${params.toString()}`);
+    params.set('_', String(Date.now()));
+    const resp = await fetch(`/api/cocina/rechazados?${params.toString()}`, { cache: 'no-store' });
     const items = await resp.json();
     rechazadosItems = Array.isArray(items) ? items : [];
     render();
@@ -304,7 +306,7 @@ $(function(){
 
   function startAutoRefresh(){
     stopAutoRefresh();
-    autoRefreshTimer = setInterval(cargarCola, 5000);
+    autoRefreshTimer = setInterval(cargarCola, 3000);
   }
   function stopAutoRefresh(){
     if(autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -334,6 +336,14 @@ $(function(){
   render();
   cargarCola();
   activarTabDesdeQuery();
+
+  // Si el usuario regresa a la pestaña del navegador, forzamos refresco inmediato.
+  // Relacionado con: pedido de actualización automática para "Listos".
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState === 'visible'){
+      cargarCola();
+    }
+  });
 
   // ===== Entregados: filtro por fecha (default hoy) =====
   function todayISO(){
