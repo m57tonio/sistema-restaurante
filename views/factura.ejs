@@ -116,6 +116,12 @@
             <!-- Relacionado con: routes/facturas.js (GET /api/facturas/:id/imprimir -> return_to) -->
             <button onclick="window.location.href='<%= (typeof return_to !== "undefined" && return_to) ? return_to : "/" %>'" class="print-button" style="background: #6c757d;">Volver</button>
         <% } %>
+        <% if (config && (config.impresora_facturas || config.factura_copias)) { %>
+            <div style="margin-top:8px; color:#555; font-size:.9em;">
+                Impresora sugerida: <strong><%= config.impresora_facturas || 'Predeterminada del sistema' %></strong>
+                · Copias: <strong><%= Number(config.factura_copias || 1) %></strong>
+            </div>
+        <% } %>
     </div>
 
     <div class="factura">
@@ -210,5 +216,13 @@
             </div>
         </div>
     </div>
+
+    <% if (config && Number(config.factura_auto_print || 0) === 1) { %>
+    <script>
+        window.addEventListener('load', function () {
+            try { window.print(); } catch (_) {}
+        });
+    </script>
+    <% } %>
 </body>
 </html> 

@@ -130,6 +130,91 @@
             </div>
 
             <div class="card mb-4">
+                <div class="card-header">
+                    Flujo de Cocina
+                </div>
+                <div class="card-body">
+                    <div class="form-check form-switch">
+                        <input
+                            class="form-check-input"
+                            type="checkbox"
+                            role="switch"
+                            id="cfgCocinaAutoListoComanda"
+                            name="cocina_auto_listo_comanda"
+                            value="1"
+                            <%= Number(config.cocina_auto_listo_comanda || 0) === 1 ? 'checked' : '' %>
+                        >
+                        <label class="form-check-label" for="cfgCocinaAutoListoComanda">
+                            Cocina sin dispositivo: imprimir comanda al enviar y pasar directo a <strong>Listo</strong>
+                        </label>
+                    </div>
+                    <div class="small text-muted mt-2">
+                        Útil cuando la cocina no usa pantalla. El mesero envía, se imprime la comanda y luego entrega desde la pestaña de listos.
+                    </div>
+                    <div class="form-check form-switch mt-2">
+                        <input
+                            class="form-check-input"
+                            type="checkbox"
+                            role="switch"
+                            id="cfgCocinaImprimeServidor"
+                            name="cocina_imprime_servidor"
+                            value="1"
+                            <%= Number(config.cocina_imprime_servidor || 0) === 1 ? 'checked' : '' %>
+                        >
+                        <label class="form-check-label" for="cfgCocinaImprimeServidor">
+                            Imprimir comanda en servidor (PC) cuando el envío se hace desde celular/tablet
+                        </label>
+                    </div>
+
+                    <hr>
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Impresora predeterminada de comandas</label>
+                            <select class="form-select" id="impresoraComandas" name="impresora_comandas" data-selected="<%= config.impresora_comandas || '' %>">
+                                <option value="">(Seleccionar impresora)</option>
+                            </select>
+                            <div class="form-text">Se usa como preferencia para comandas.</div>
+                            <div class="mt-2">
+                                <button type="button" id="btnImprimirComandaPrueba" class="btn btn-outline-primary btn-sm">
+                                    <i class="bi bi-printer me-1"></i>Imprimir comanda de prueba (servidor)
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Impresora predeterminada de facturas</label>
+                            <select class="form-select" id="impresoraFacturas" name="impresora_facturas" data-selected="<%= config.impresora_facturas || '' %>">
+                                <option value="">(Seleccionar impresora)</option>
+                            </select>
+                            <div class="form-text">Se usa como preferencia para facturas.</div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Copias de factura</label>
+                            <input type="number" min="1" max="5" class="form-control" name="factura_copias" value="<%= Number(config.factura_copias || 1) %>">
+                        </div>
+                        <div class="col-md-9 d-flex align-items-end">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="cfgFacturaAutoPrint" name="factura_auto_print" value="1" <%= Number(config.factura_auto_print || 0) === 1 ? 'checked' : '' %>>
+                                <label class="form-check-label" for="cfgFacturaAutoPrint">Impresión automática de factura al abrir vista de impresión</label>
+                            </div>
+                        </div>
+                        <div class="col-md-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="cfgFacturaImprimeServidor" name="factura_imprime_servidor" value="1" <%= Number(config.factura_imprime_servidor || 0) === 1 ? 'checked' : '' %>>
+                                <label class="form-check-label" for="cfgFacturaImprimeServidor">Imprimir factura en servidor (PC) y no depender del navegador del dispositivo</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="alert alert-warning mt-3 py-2 px-3 small mb-0">
+                        En entorno web, el navegador puede solicitar confirmación y no permite forzar impresora al 100%.
+                    </div>
+                    <div class="alert alert-info mt-2 py-2 px-3 small mb-0">
+                        Si en el ticket aparece URL/encabezado (ej. <code>localhost...</code>), eso es del navegador (headers/footers de impresión), no de la impresora térmica.
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mb-4">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <span><i class="bi bi-wifi me-1"></i>Vincular dispositivos (Red local)</span>
                     <span class="badge text-bg-secondary">Administrador</span>
@@ -355,6 +440,80 @@
 
             // Carga inicial automática al abrir Configuración
             loadConnectionInfo();
+        })();
+
+        // Cargar impresoras del sistema y preseleccionar configuración guardada
+        (function initImpresorasConfig() {
+            const selComandas = document.getElementById('impresoraComandas');
+            const selFacturas = document.getElementById('impresoraFacturas');
+            if (!selComandas || !selFacturas) return;
+
+            const selectedComandas = String(selComandas.dataset.selected || '').trim();
+            const selectedFacturas = String(selFacturas.dataset.selected || '').trim();
+
+            function fillSelect(selectEl, list, selected) {
+                const opts = Array.isArray(list) ? list : [];
+                const hasSelected = selected && opts.includes(selected);
+                selectEl.innerHTML = '';
+
+                const base = document.createElement('option');
+                base.value = '';
+                base.textContent = '(Seleccionar impresora)';
+                selectEl.appendChild(base);
+
+                if (!hasSelected && selected) {
+                    const extra = document.createElement('option');
+                    extra.value = selected;
+                    extra.textContent = `${selected} (guardada)`;
+                    extra.selected = true;
+                    selectEl.appendChild(extra);
+                }
+
+                opts.forEach((name) => {
+                    const s = String(name || '').trim();
+                    if (!s) return;
+                    const opt = document.createElement('option');
+                    opt.value = s;
+                    opt.textContent = s;
+                    if (s === selected) opt.selected = true;
+                    selectEl.appendChild(opt);
+                });
+            }
+
+            fetch('/configuracion/impresoras')
+                .then(r => r.json())
+                .then((list) => {
+                    fillSelect(selComandas, list, selectedComandas);
+                    fillSelect(selFacturas, list, selectedFacturas);
+                })
+                .catch(() => {
+                    fillSelect(selComandas, [], selectedComandas);
+                    fillSelect(selFacturas, [], selectedFacturas);
+                });
+        })();
+
+        (function initComandaPrueba() {
+            const btn = document.getElementById('btnImprimirComandaPrueba');
+            if (!btn) return;
+            btn.addEventListener('click', async function () {
+                const old = btn.innerHTML;
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Imprimiendo...';
+                try {
+                    const resp = await fetch('/configuracion/impresion/comanda-prueba', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) throw new Error(data.error || 'No se pudo imprimir');
+                    alert(`Comanda de prueba enviada a impresora: ${data.impresora || 'predeterminada'}`);
+                } catch (e) {
+                    alert(String(e.message || e));
+                } finally {
+                    btn.disabled = false;
+                    btn.innerHTML = old;
+                }
+            });
         })();
     </script>
 </body>

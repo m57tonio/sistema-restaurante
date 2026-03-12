@@ -12,6 +12,20 @@ CREATE TABLE IF NOT EXISTS productos (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+-- Relación padre -> hijo usando productos existentes (legado/compatibilidad)
+-- Ejemplo: Producto padre "CORRIENTE" con hijos que también son productos.
+-- Relacionado con:
+-- - routes/productos.js (endpoints /api/productos/:padreId/hijos)
+-- - public/js/mesas.js (fallback cuando no hay hijos-items)
+CREATE TABLE IF NOT EXISTS producto_hijos (
+    producto_padre_id INT NOT NULL,
+    producto_hijo_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (producto_padre_id, producto_hijo_id),
+    FOREIGN KEY (producto_padre_id) REFERENCES productos(id) ON DELETE CASCADE,
+    FOREIGN KEY (producto_hijo_id) REFERENCES productos(id) ON DELETE CASCADE
+);
+
 
 -- Hijos como "items" de texto (NO son productos, no tienen precio)
 -- Se usa para configurar componentes/opciones internas del producto padre.
@@ -89,7 +103,18 @@ CREATE TABLE IF NOT EXISTS configuracion_impresion (
     logo_data LONGBLOB,
     logo_tipo VARCHAR(50),
     qr_data LONGBLOB,
-    qr_tipo VARCHAR(50)
+    qr_tipo VARCHAR(50),
+    -- Modo operativo: cocina sin dispositivo.
+    -- Si está activo, al enviar desde Mesas se imprime comanda y el item pasa directo a "listo".
+    cocina_auto_listo_comanda TINYINT(1) NOT NULL DEFAULT 0,
+    -- Si está activo, la comanda se imprime en el servidor (PC), no en el navegador del celular.
+    cocina_imprime_servidor TINYINT(1) NOT NULL DEFAULT 0,
+    -- Preferencias de impresión (referenciales en entorno web).
+    impresora_comandas VARCHAR(150) NULL,
+    impresora_facturas VARCHAR(150) NULL,
+    factura_imprime_servidor TINYINT(1) NOT NULL DEFAULT 0,
+    factura_copias INT NOT NULL DEFAULT 1,
+    factura_auto_print TINYINT(1) NOT NULL DEFAULT 0
 ); 
 
 -- ===========================
@@ -174,6 +199,9 @@ CREATE TABLE IF NOT EXISTS pedido_items (
     preparado_at TIMESTAMP NULL,
     listo_at TIMESTAMP NULL,
     servido_at TIMESTAMP NULL,
+    -- Marca cuándo la línea ya fue incluida en una comanda impresa.
+    -- Evita duplicar impresión cuando la mesa agrega más productos después.
+    comanda_impresa_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (pedido_id) REFERENCES pedidos(id),
@@ -200,6 +228,28 @@ CREATE TABLE IF NOT EXISTS factura_pagos (
     FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE CASCADE
 );
 
+-- 2.1) Modo cocina sin dispositivo (si la columna aún no existe)
+ALTER TABLE configuracion_impresion
+    ADD COLUMN IF NOT EXISTS cocina_auto_listo_comanda TINYINT(1) NOT NULL DEFAULT 0;
+
+ALTER TABLE configuracion_impresion
+    ADD COLUMN IF NOT EXISTS cocina_imprime_servidor TINYINT(1) NOT NULL DEFAULT 0;
+
+ALTER TABLE configuracion_impresion
+    ADD COLUMN IF NOT EXISTS impresora_comandas VARCHAR(150) NULL;
+
+ALTER TABLE configuracion_impresion
+    ADD COLUMN IF NOT EXISTS impresora_facturas VARCHAR(150) NULL;
+
+ALTER TABLE configuracion_impresion
+    ADD COLUMN IF NOT EXISTS factura_imprime_servidor TINYINT(1) NOT NULL DEFAULT 0;
+
+ALTER TABLE configuracion_impresion
+    ADD COLUMN IF NOT EXISTS factura_copias INT NOT NULL DEFAULT 1;
+
+ALTER TABLE configuracion_impresion
+    ADD COLUMN IF NOT EXISTS factura_auto_print TINYINT(1) NOT NULL DEFAULT 0;
+
 -- 3) Agregar estado "rechazado" a pedidos y pedido_items (si ya existían)
 -- Nota: Esto permite marcar pedidos cancelados como rechazados y visualizarlos en Cocina.
 -- Relacionado con:
@@ -215,3 +265,16 @@ ALTER TABLE pedidos
 
 ALTER TABLE pedido_items
     MODIFY estado ENUM('pendiente', 'enviado', 'preparando', 'listo', 'servido', 'cancelado', 'rechazado') DEFAULT 'pendiente';
+
+ALTER TABLE pedido_items
+    ADD COLUMN IF NOT EXISTS comanda_impresa_at TIMESTAMP NULL AFTER servido_at;
+
+-- 6) Crear relación padre-hijo de productos (compatibilidad con rutas legacy)
+CREATE TABLE IF NOT EXISTS producto_hijos (
+    producto_padre_id INT NOT NULL,
+    producto_hijo_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (producto_padre_id, producto_hijo_id),
+    FOREIGN KEY (producto_padre_id) REFERENCES productos(id) ON DELETE CASCADE,
+    FOREIGN KEY (producto_hijo_id) REFERENCES productos(id) ON DELETE CASCADE
+);

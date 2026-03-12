@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { exec } = require('child_process');
 
 // Validar rutas de retorno (evitar open-redirect / URLs externas)
 // Se usa para que el botón "Volver" de la impresión regrese a Mesas cuando aplique.
@@ -37,6 +41,74 @@ function sumatoriaPagos(pagos) {
 function almostEqualMoney(a, b) {
     // Tolerancia de 1 centavo para evitar problemas de flotantes
     return Math.abs(Number(a) - Number(b)) < 0.01;
+}
+
+function execCommand(command) {
+    return new Promise((resolve, reject) => {
+        exec(command, { timeout: 20000 }, (error, stdout, stderr) => {
+            if (error) return reject(new Error(String(stderr || error.message || 'Error al ejecutar impresion')));
+            resolve({ stdout, stderr });
+        });
+    });
+}
+
+async function imprimirTextoServidor(texto, impresoraNombre, copias = 1) {
+    const tmpFile = path.join(os.tmpdir(), `factura-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
+    fs.writeFileSync(tmpFile, String(texto || ''), { encoding: 'utf8' });
+    try {
+        const n = Math.max(1, Number(copias || 1) || 1);
+        for (let i = 0; i < n; i += 1) {
+            if (process.platform === 'win32') {
+                const psPath = tmpFile.replace(/'/g, "''");
+                const psPrinter = String(impresoraNombre || '').replace(/'/g, "''");
+                const cmd = psPrinter
+                    ? `powershell -NoProfile -Command "Get-Content -Raw -Encoding UTF8 '${psPath}' | Out-Printer -Name '${psPrinter}'"`
+                    : `powershell -NoProfile -Command "Get-Content -Raw -Encoding UTF8 '${psPath}' | Out-Printer"`;
+                await execCommand(cmd);
+            } else {
+                const quoted = `"${tmpFile.replace(/"/g, '\\"')}"`;
+                const p = String(impresoraNombre || '').trim();
+                const cmd = p
+                    ? `lp -d "${p.replace(/"/g, '\\"')}" ${quoted}`
+                    : `lp ${quoted}`;
+                await execCommand(cmd);
+            }
+        }
+    } finally {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+    }
+}
+
+function buildFacturaTexto({ factura, cliente, detalles, pagos, negocio }) {
+    const line = '-'.repeat(42);
+    const out = [];
+    out.push(String(negocio?.nombre_negocio || 'FACTURA'));
+    if (negocio?.direccion) out.push(String(negocio.direccion));
+    if (negocio?.telefono) out.push(`Tel: ${negocio.telefono}`);
+    if (negocio?.nit) out.push(`NIT: ${negocio.nit}`);
+    out.push(line);
+    out.push(`Factura #: ${factura?.id ?? '-'}`);
+    out.push(`Fecha: ${new Date(factura?.fecha || Date.now()).toLocaleString('es-CO')}`);
+    out.push(`Cliente: ${cliente?.nombre || '-'}`);
+    out.push(line);
+    (detalles || []).forEach((d) => {
+        out.push(String(d?.producto_nombre || ''));
+        out.push(`${Number(d?.cantidad || 0)}${String(d?.unidad_medida || '')}  $${Number(d?.precio_unitario || 0).toLocaleString('es-CO')}  $${Number(d?.subtotal || 0).toLocaleString('es-CO')}`);
+    });
+    out.push(line);
+    out.push(`Total: $${Number(factura?.total || 0).toLocaleString('es-CO')}`);
+    if (Array.isArray(pagos) && pagos.length > 0) {
+        out.push('Pagos:');
+        pagos.forEach((p) => {
+            const metodo = String(p?.metodo || '').trim();
+            const ref = String(p?.referencia || '').trim();
+            out.push(`${metodo}: $${Number(p?.monto || 0).toLocaleString('es-CO')}${ref ? ` (${ref})` : ''}`);
+        });
+    } else {
+        out.push(`Forma de pago: ${String(factura?.forma_pago || '')}`);
+    }
+    out.push(String(negocio?.pie_pagina || 'Gracias por su compra'));
+    return out.join('\r\n');
 }
 
 // Crear nueva factura
@@ -296,6 +368,84 @@ router.get('/:id/detalles', async (req, res) => {
     } catch (error) {
         console.error('Error al obtener detalles de la factura:', error);
         res.status(500).json({ error: 'Error al obtener detalles de la factura' });
+    }
+});
+
+// GET /facturas/config/impresion - flags de impresión para frontend
+router.get('/config/impresion', async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            `SELECT impresora_facturas, factura_imprime_servidor, factura_copias, factura_auto_print
+             FROM configuracion_impresion
+             LIMIT 1`
+        );
+        const cfg = rows?.[0] || {};
+        res.json({
+            impresora_facturas: String(cfg?.impresora_facturas || '').trim() || null,
+            factura_imprime_servidor: Number(cfg?.factura_imprime_servidor || 0) === 1,
+            factura_copias: Math.max(1, Number(cfg?.factura_copias || 1) || 1),
+            factura_auto_print: Number(cfg?.factura_auto_print || 0) === 1
+        });
+    } catch (error) {
+        console.error('Error al leer configuración de impresión de factura:', error);
+        res.status(500).json({ error: 'Error al leer configuración de impresión de factura' });
+    }
+});
+
+// POST /facturas/:id/imprimir-servidor - impresión de factura desde PC/servidor
+router.post('/:id/imprimir-servidor', async (req, res) => {
+    try {
+        const facturaId = Number(req.params.id);
+        if (!Number.isInteger(facturaId) || facturaId <= 0) {
+            return res.status(400).json({ error: 'Factura inválida' });
+        }
+
+        const [configRows] = await db.query('SELECT * FROM configuracion_impresion LIMIT 1');
+        const config = configRows?.[0] || {};
+        const printerName = String(config?.impresora_facturas || '').trim() || null;
+        const copias = Math.max(1, Number(config?.factura_copias || 1) || 1);
+
+        const [facturas] = await db.query(
+            `SELECT f.*, c.nombre as cliente_nombre, c.direccion, c.telefono
+             FROM facturas f
+             JOIN clientes c ON f.cliente_id = c.id
+             WHERE f.id = ?`,
+            [facturaId]
+        );
+        if (!facturas.length) return res.status(404).json({ error: 'Factura no encontrada' });
+        const factura = facturas[0];
+
+        const [detalles] = await db.query(
+            `SELECT d.*, p.nombre as producto_nombre
+             FROM detalle_factura d
+             JOIN productos p ON d.producto_id = p.id
+             WHERE d.factura_id = ?`,
+            [facturaId]
+        );
+
+        let pagos = [];
+        try {
+            const [pagosRows] = await db.query(
+                'SELECT metodo, monto, referencia FROM factura_pagos WHERE factura_id = ? ORDER BY id ASC',
+                [facturaId]
+            );
+            pagos = pagosRows || [];
+        } catch (_) {
+            pagos = [];
+        }
+
+        const texto = buildFacturaTexto({
+            factura,
+            cliente: { nombre: factura.cliente_nombre, direccion: factura.direccion, telefono: factura.telefono },
+            detalles: detalles || [],
+            pagos,
+            negocio: config || {}
+        });
+        await imprimirTextoServidor(texto, printerName, copias);
+        res.json({ printed: true, impresora: printerName || 'predeterminada', copias });
+    } catch (error) {
+        console.error('Error al imprimir factura en servidor:', error);
+        res.status(500).json({ error: 'No se pudo imprimir la factura en servidor' });
     }
 });
 

@@ -3,6 +3,9 @@ const router = express.Router();
 const db = require('../db');
 const multer = require('multer');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
 const QRCode = require('qrcode');
 
 // Configuración de multer para memoria
@@ -55,6 +58,13 @@ router.get('/', async (req, res) => {
                     pie_pagina: '',
                     ancho_papel: 80,
                     font_size: 1,
+                    cocina_auto_listo_comanda: 0,
+                    cocina_imprime_servidor: 0,
+                    impresora_comandas: '',
+                    impresora_facturas: '',
+                    factura_imprime_servidor: 0,
+                    factura_copias: 1,
+                    factura_auto_print: 0,
                     // Previsualizadores (vacíos en configuración por defecto)
                     logo_src: null,
                     qr_src: null
@@ -112,7 +122,14 @@ router.post('/', upload.fields([
             nit,
             pie_pagina,
             ancho_papel,
-            font_size
+            font_size,
+            cocina_auto_listo_comanda,
+            cocina_imprime_servidor,
+            impresora_comandas,
+            impresora_facturas,
+            factura_imprime_servidor,
+            factura_copias,
+            factura_auto_print
         } = req.body;
 
         const [results] = await db.query('SELECT * FROM configuracion_impresion LIMIT 1');
@@ -124,7 +141,14 @@ router.post('/', upload.fields([
             nit || null,
             pie_pagina || null,
             ancho_papel || 80,
-            font_size || 1
+            font_size || 1,
+            Number(String(cocina_auto_listo_comanda || '0')) ? 1 : 0,
+            Number(String(cocina_imprime_servidor || '0')) ? 1 : 0,
+            String(impresora_comandas || '').trim() || null,
+            String(impresora_facturas || '').trim() || null,
+            Number(String(factura_imprime_servidor || '0')) ? 1 : 0,
+            Math.max(1, Number(factura_copias || 1) || 1),
+            Number(String(factura_auto_print || '0')) ? 1 : 0
         ];
 
         // Agregar datos de imágenes si se subieron nuevas
@@ -142,7 +166,8 @@ router.post('/', upload.fields([
             let sql = `
                 INSERT INTO configuracion_impresion 
                 (nombre_negocio, direccion, telefono, nit, pie_pagina, 
-                 ancho_papel, font_size
+                 ancho_papel, font_size, cocina_auto_listo_comanda, cocina_imprime_servidor,
+                 impresora_comandas, impresora_facturas, factura_imprime_servidor, factura_copias, factura_auto_print
             `;
             if (req.files?.logo) sql += ', logo_data, logo_tipo';
             if (req.files?.qr) sql += ', qr_data, qr_tipo';
@@ -154,7 +179,8 @@ router.post('/', upload.fields([
             let sql = `
                 UPDATE configuracion_impresion 
                 SET nombre_negocio = ?, direccion = ?, telefono = ?, nit = ?,
-                    pie_pagina = ?, ancho_papel = ?, font_size = ?
+                    pie_pagina = ?, ancho_papel = ?, font_size = ?, cocina_auto_listo_comanda = ?, cocina_imprime_servidor = ?,
+                    impresora_comandas = ?, impresora_facturas = ?, factura_imprime_servidor = ?, factura_copias = ?, factura_auto_print = ?
             `;
             if (req.files?.logo) sql += ', logo_data = ?, logo_tipo = ?';
             if (req.files?.qr) sql += ', qr_data = ?, qr_tipo = ?';
@@ -172,9 +198,95 @@ router.post('/', upload.fields([
     }
 });
 
-// Eliminar la ruta de impresoras que no se usa
+// Obtener impresoras instaladas del sistema (Windows / Linux / macOS)
+// Nota: en navegador no se puede forzar impresora, esto funciona como preferencia referencial.
 router.get('/impresoras', (req, res) => {
-    res.json([]);
+    const platform = String(process.platform || '').toLowerCase();
+
+    const parseLines = (out) => String(out || '')
+        .split(/\r?\n/)
+        .map((x) => String(x || '').trim())
+        .filter(Boolean);
+
+    let cmd = '';
+    if (platform === 'win32') {
+        cmd = 'powershell -NoProfile -Command "Get-Printer | Select-Object -ExpandProperty Name"';
+    } else if (platform === 'darwin') {
+        cmd = "lpstat -a | awk '{print $1}'";
+    } else {
+        cmd = "lpstat -a | awk '{print $1}'";
+    }
+
+    exec(cmd, { timeout: 5000 }, (error, stdout) => {
+        if (error) return res.json([]);
+        const impresoras = parseLines(stdout);
+        res.json([...new Set(impresoras)]);
+    });
+});
+
+function execCommand(command) {
+    return new Promise((resolve, reject) => {
+        exec(command, { timeout: 20000 }, (error, stdout, stderr) => {
+            if (error) return reject(new Error(String(stderr || error.message || 'Error al ejecutar impresion')));
+            resolve({ stdout, stderr });
+        });
+    });
+}
+
+async function imprimirTextoServidor(texto, impresoraNombre) {
+    const tmpFile = path.join(os.tmpdir(), `comanda-prueba-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
+    fs.writeFileSync(tmpFile, String(texto || ''), { encoding: 'utf8' });
+    try {
+        if (process.platform === 'win32') {
+            const psPath = tmpFile.replace(/'/g, "''");
+            const psPrinter = String(impresoraNombre || '').replace(/'/g, "''");
+            const cmd = psPrinter
+                ? `powershell -NoProfile -Command "Get-Content -Raw -Encoding UTF8 '${psPath}' | Out-Printer -Name '${psPrinter}'"`
+                : `powershell -NoProfile -Command "Get-Content -Raw -Encoding UTF8 '${psPath}' | Out-Printer"`;
+            await execCommand(cmd);
+            return;
+        }
+        const quoted = `"${tmpFile.replace(/"/g, '\\"')}"`;
+        const p = String(impresoraNombre || '').trim();
+        const cmd = p
+            ? `lp -d "${p.replace(/"/g, '\\"')}" ${quoted}`
+            : `lp ${quoted}`;
+        await execCommand(cmd);
+    } finally {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+    }
+}
+
+// POST /configuracion/impresion/comanda-prueba
+// Imprime una comanda de prueba desde el servidor (PC), sin navegador móvil.
+router.post('/impresion/comanda-prueba', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT nombre_negocio, impresora_comandas FROM configuracion_impresion LIMIT 1');
+        const cfg = rows?.[0] || {};
+        const negocio = String(cfg?.nombre_negocio || 'MI NEGOCIO');
+        const impresora = String(cfg?.impresora_comandas || '').trim() || null;
+
+        const line = '-'.repeat(42);
+        const texto = [
+            negocio,
+            line,
+            'COMANDA DE PRUEBA',
+            `Fecha: ${new Date().toLocaleString('es-CO')}`,
+            'Mesa: 1',
+            'Mesero: Prueba',
+            line,
+            'x1 Producto de prueba',
+            '  Obs: Sin cebolla',
+            line,
+            'Fin de prueba'
+        ].join('\r\n');
+
+        await imprimirTextoServidor(texto, impresora);
+        res.json({ ok: true, impresora: impresora || 'predeterminada' });
+    } catch (error) {
+        console.error('Error al imprimir comanda de prueba:', error);
+        res.status(500).json({ error: 'No se pudo imprimir la comanda de prueba en servidor' });
+    }
 });
 
 // ===== Vinculación de dispositivos (QR + diagnóstico) =====

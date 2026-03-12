@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { exec } = require('child_process');
 
 // Rutas para gestión de mesas y pedidos de restaurante
 // - Renderiza la vista de mesas (GET /mesas)
@@ -49,6 +53,91 @@ async function getMesaIdByItem(connection, itemId) {
     return rows[0].mesa_id;
 }
 
+// Configuración operativa de Cocina:
+// - auto_listo_comanda: al enviar desde Mesas el item pasa directo a "listo".
+// - imprime_servidor: la comanda se imprime en el servidor (no en el navegador del celular).
+async function getEnvioCocinaConfig(executor) {
+    const q = executor && typeof executor.query === 'function' ? executor : db;
+    try {
+        const [rows] = await q.query(
+            `SELECT cocina_auto_listo_comanda, cocina_imprime_servidor, impresora_comandas
+             FROM configuracion_impresion
+             LIMIT 1`
+        );
+        return {
+            auto_listo_comanda: Number(rows?.[0]?.cocina_auto_listo_comanda || 0) === 1,
+            imprime_servidor: Number(rows?.[0]?.cocina_imprime_servidor || 0) === 1,
+            impresora_comandas: String(rows?.[0]?.impresora_comandas || '').trim() || null
+        };
+    } catch (e) {
+        // Compatibilidad con instalaciones donde aún no existe alguna columna nueva.
+        if (String(e?.code || '') === 'ER_BAD_FIELD_ERROR') {
+            const [rows] = await q.query('SELECT cocina_auto_listo_comanda FROM configuracion_impresion LIMIT 1');
+            return {
+                auto_listo_comanda: Number(rows?.[0]?.cocina_auto_listo_comanda || 0) === 1,
+                imprime_servidor: false,
+                impresora_comandas: null
+            };
+        }
+        throw e;
+    }
+}
+
+function buildComandaTexto({ pedido, items, negocio }) {
+    const line = '-'.repeat(42);
+    const lines = [];
+    lines.push(String(negocio || 'COMANDA'));
+    lines.push(line);
+    lines.push(`Mesa: ${pedido?.mesa_numero ?? '-'}`);
+    lines.push(`Mesero: ${pedido?.mesero_nombre || 'Sin asignar'}`);
+    lines.push(`Fecha: ${new Date().toLocaleString('es-CO')}`);
+    lines.push(`Pedido: #${pedido?.id ?? '-'}`);
+    lines.push(line);
+    (items || []).forEach((it) => {
+        lines.push(`x${Number(it?.cantidad || 0)} ${String(it?.producto_nombre || '')}`);
+        const nota = String(it?.nota || '').trim();
+        if (nota) lines.push(`  Obs: ${nota}`);
+    });
+    lines.push(line);
+    lines.push('Fin de comanda');
+    return lines.join('\r\n');
+}
+
+function execCommand(command) {
+    return new Promise((resolve, reject) => {
+        exec(command, { timeout: 20000 }, (error, stdout, stderr) => {
+            if (error) return reject(new Error(String(stderr || error.message || 'Error al ejecutar comando de impresión')));
+            resolve({ stdout, stderr });
+        });
+    });
+}
+
+async function imprimirTextoEnServidor(texto, impresoraNombre) {
+    const tmpFile = path.join(os.tmpdir(), `comanda-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
+    fs.writeFileSync(tmpFile, String(texto || ''), { encoding: 'utf8' });
+    try {
+        if (process.platform === 'win32') {
+            const psPath = tmpFile.replace(/'/g, "''");
+            const psPrinter = String(impresoraNombre || '').replace(/'/g, "''");
+            const cmd = psPrinter
+                ? `powershell -NoProfile -Command "Get-Content -Raw -Encoding UTF8 '${psPath}' | Out-Printer -Name '${psPrinter}'"`
+                : `powershell -NoProfile -Command "Get-Content -Raw -Encoding UTF8 '${psPath}' | Out-Printer"`;
+            await execCommand(cmd);
+            return;
+        }
+
+        // Linux/macOS (CUPS)
+        const quoted = `"${tmpFile.replace(/"/g, '\\"')}"`;
+        const p = String(impresoraNombre || '').trim();
+        const cmd = p
+            ? `lp -d "${p.replace(/"/g, '\\"')}" ${quoted}`
+            : `lp ${quoted}`;
+        await execCommand(cmd);
+    } finally {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+    }
+}
+
 // GET /mesas - Página de gestión de mesas
 router.get('/', async (req, res) => {
     try {
@@ -56,10 +145,14 @@ router.get('/', async (req, res) => {
         const [mesas] = await db.query(`
             SELECT m.*,
             (
-                SELECT COUNT(*) FROM pedidos p 
-                -- 'rechazado' se considera finalizado (no pedido activo)
-                -- Relacionado con: estado "rechazado" solicitado (ver database.sql)
-                WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado','rechazado')
+                -- Conteo de pedidos realmente activos (con al menos 1 item activo).
+                -- Evita bloquear mesas solo por abrir comanda vacía.
+                SELECT COUNT(DISTINCT p.id)
+                FROM pedidos p
+                JOIN pedido_items i ON i.pedido_id = p.id
+                WHERE p.mesa_id = m.id
+                  AND p.estado NOT IN ('cerrado','cancelado','rechazado')
+                  AND i.estado NOT IN ('cancelado','rechazado')
             ) AS pedidos_abiertos,
             (
                 SELECT COUNT(*)
@@ -100,10 +193,14 @@ router.get('/listar', async (req, res) => {
         const [mesas] = await db.query(`
             SELECT m.*,
             (
-                SELECT COUNT(*) FROM pedidos p 
-                -- 'rechazado' se considera finalizado (no pedido activo)
-                -- Relacionado con: estado "rechazado" solicitado (ver database.sql)
-                WHERE p.mesa_id = m.id AND p.estado NOT IN ('cerrado','cancelado','rechazado')
+                -- Conteo de pedidos realmente activos (con al menos 1 item activo).
+                -- Evita bloquear mesas solo por abrir comanda vacía.
+                SELECT COUNT(DISTINCT p.id)
+                FROM pedidos p
+                JOIN pedido_items i ON i.pedido_id = p.id
+                WHERE p.mesa_id = m.id
+                  AND p.estado NOT IN ('cerrado','cancelado','rechazado')
+                  AND i.estado NOT IN ('cancelado','rechazado')
             ) AS pedidos_abiertos,
             (
                 SELECT COUNT(*)
@@ -132,6 +229,21 @@ router.get('/listar', async (req, res) => {
     } catch (error) {
         console.error('Error al listar mesas:', error);
         res.status(500).json({ error: 'Error al listar mesas' });
+    }
+});
+
+// GET /mesas/config/envio-cocina - API: flags del flujo de envío a cocina
+// Relacionado con: public/js/mesas.js (botón "Enviar a cocina")
+router.get('/config/envio-cocina', async (req, res) => {
+    try {
+        const conf = await getEnvioCocinaConfig();
+        res.json({
+            auto_listo_comanda: !!conf.auto_listo_comanda,
+            imprime_servidor: !!conf.imprime_servidor
+        });
+    } catch (error) {
+        console.error('Error al leer configuración de envío a cocina:', error);
+        res.status(500).json({ error: 'Error al leer configuración de envío a cocina' });
     }
 });
 
@@ -235,9 +347,14 @@ router.post('/abrir', async (req, res) => {
                     existentes[0].mesero_nombre = meseroNombre;
                 }
                 await syncMesaEstadoByItems(connection, mesa_id);
+                const conf = await getEnvioCocinaConfig(connection);
                 await connection.commit();
                 connection.release();
-                return res.json({ pedido: existentes[0] });
+                return res.json({
+                    pedido: existentes[0],
+                    auto_listo_comanda: !!conf.auto_listo_comanda,
+                    imprime_servidor: !!conf.imprime_servidor
+                });
             }
 
             const [insert] = await connection.query(
@@ -248,6 +365,7 @@ router.post('/abrir', async (req, res) => {
             // Importante: abrir pedido no fuerza "ocupada" si aún no hay items.
             // La mesa cambia automáticamente según el conteo real de productos.
             await syncMesaEstadoByItems(connection, mesa_id);
+            const conf = await getEnvioCocinaConfig(connection);
 
             await connection.commit();
             connection.release();
@@ -260,7 +378,9 @@ router.post('/abrir', async (req, res) => {
                     estado: 'abierto',
                     total: 0,
                     notas: notas || null
-                }
+                },
+                auto_listo_comanda: !!conf.auto_listo_comanda,
+                imprime_servidor: !!conf.imprime_servidor
             });
         } catch (error) {
             await connection.rollback();
@@ -291,6 +411,169 @@ router.get('/pedidos/:pedidoId', async (req, res) => {
     } catch (error) {
         console.error('Error al obtener pedido:', error);
         res.status(500).json({ error: 'Error al obtener pedido' });
+    }
+});
+
+// GET /mesas/pedidos/:pedidoId/comanda - Vista de comanda para impresión rápida
+// Query params opcionales:
+// - item_ids=1,2,3 -> imprime solo esos items
+// - auto_print=1 -> dispara window.print al cargar
+// Relacionado con:
+// - public/js/mesas.js (enviar a cocina)
+router.get('/pedidos/:pedidoId/comanda', async (req, res) => {
+    try {
+        const pedidoId = Number(req.params.pedidoId);
+        if (!Number.isInteger(pedidoId) || pedidoId <= 0) {
+            return res.status(400).send('Pedido inválido');
+        }
+
+        const [cfgRows] = await db.query('SELECT * FROM configuracion_impresion LIMIT 1');
+        const config = cfgRows?.[0] || { nombre_negocio: 'Comanda', direccion: '', telefono: '', ancho_papel: 80, font_size: 1 };
+
+        const [pedidos] = await db.query(
+            `SELECT p.*, m.numero AS mesa_numero
+             FROM pedidos p
+             JOIN mesas m ON m.id = p.mesa_id
+             WHERE p.id = ?
+             LIMIT 1`,
+            [pedidoId]
+        );
+        if (!pedidos.length) return res.status(404).send('Pedido no encontrado');
+        const pedido = pedidos[0];
+
+        const rawIds = String(req.query.item_ids || '').trim();
+        const ids = rawIds
+            ? rawIds.split(',').map(x => Number(String(x || '').trim())).filter(n => Number.isInteger(n) && n > 0)
+            : [];
+
+        const incluirImpresos = String(req.query.incluir_impresos || '') === '1';
+        const marcarImpresos = String(req.query.marcar_impresos || '1') === '1';
+
+        let sql = `
+            SELECT i.*, pr.nombre AS producto_nombre
+            FROM pedido_items i
+            JOIN productos pr ON pr.id = i.producto_id
+            WHERE i.pedido_id = ?
+              AND i.estado IN ('enviado','preparando','listo')
+              ${incluirImpresos ? '' : 'AND i.comanda_impresa_at IS NULL'}
+        `;
+        const params = [pedidoId];
+        if (ids.length > 0) {
+            sql += ' AND i.id IN (?)';
+            params.push(ids);
+        }
+        sql += ' ORDER BY i.created_at ASC, i.id ASC';
+
+        const connection = await db.getConnection();
+        let items = [];
+        try {
+            await connection.beginTransaction();
+            const [rows] = await connection.query(sql, params);
+            items = rows || [];
+
+            // Marcamos como impresos los items incluidos en la comanda.
+            // Evita duplicación en próximas impresiones de la misma mesa.
+            if (marcarImpresos && items.length > 0) {
+                const idsImpresos = items.map((it) => Number(it.id)).filter((n) => Number.isInteger(n) && n > 0);
+                if (idsImpresos.length > 0) {
+                    await connection.query(
+                        `UPDATE pedido_items
+                         SET comanda_impresa_at = COALESCE(comanda_impresa_at, NOW())
+                         WHERE id IN (?)`,
+                        [idsImpresos]
+                    );
+                }
+            }
+
+            await connection.commit();
+            connection.release();
+        } catch (err) {
+            await connection.rollback();
+            connection.release();
+            throw err;
+        }
+
+        res.render('comanda', {
+            pedido,
+            items: items || [],
+            config,
+            auto_print: String(req.query.auto_print || '') === '1'
+        });
+    } catch (error) {
+        console.error('Error al generar comanda:', error);
+        res.status(500).send('Error al generar comanda');
+    }
+});
+
+// POST /mesas/pedidos/:pedidoId/comanda/imprimir-servidor
+// Imprime comanda desde la PC/servidor para evitar dependencia de AirPrint en celulares.
+router.post('/pedidos/:pedidoId/comanda/imprimir-servidor', async (req, res) => {
+    try {
+        const pedidoId = Number(req.params.pedidoId);
+        if (!Number.isInteger(pedidoId) || pedidoId <= 0) {
+            return res.status(400).json({ error: 'Pedido inválido' });
+        }
+
+        const raw = Array.isArray(req.body?.item_ids) ? req.body.item_ids : [];
+        const ids = raw
+            .map((x) => Number(x))
+            .filter((n) => Number.isInteger(n) && n > 0);
+        if (ids.length === 0) {
+            return res.status(400).json({ error: 'item_ids requerido' });
+        }
+
+        const [cfgRows] = await db.query('SELECT * FROM configuracion_impresion LIMIT 1');
+        const cfg = cfgRows?.[0] || {};
+        const printerName = String(cfg?.impresora_comandas || '').trim() || null;
+
+        const [pedidos] = await db.query(
+            `SELECT p.*, m.numero AS mesa_numero
+             FROM pedidos p
+             JOIN mesas m ON m.id = p.mesa_id
+             WHERE p.id = ?
+             LIMIT 1`,
+            [pedidoId]
+        );
+        if (!pedidos.length) return res.status(404).json({ error: 'Pedido no encontrado' });
+        const pedido = pedidos[0];
+
+        const [items] = await db.query(
+            `SELECT i.*, pr.nombre AS producto_nombre
+             FROM pedido_items i
+             JOIN productos pr ON pr.id = i.producto_id
+             WHERE i.pedido_id = ?
+               AND i.id IN (?)
+               AND i.comanda_impresa_at IS NULL
+             ORDER BY i.created_at ASC, i.id ASC`,
+            [pedidoId, ids]
+        );
+        if (!items.length) {
+            return res.status(200).json({ printed: false, message: 'No hay items nuevos para imprimir' });
+        }
+
+        const texto = buildComandaTexto({
+            pedido,
+            items,
+            negocio: cfg?.nombre_negocio || 'COMANDA'
+        });
+        await imprimirTextoEnServidor(texto, printerName);
+
+        const idsImpresos = items.map((it) => Number(it.id)).filter((n) => Number.isInteger(n) && n > 0);
+        await db.query(
+            `UPDATE pedido_items
+             SET comanda_impresa_at = COALESCE(comanda_impresa_at, NOW())
+             WHERE id IN (?)`,
+            [idsImpresos]
+        );
+
+        return res.json({
+            printed: true,
+            impresora: printerName || 'predeterminada',
+            total_items: idsImpresos.length
+        });
+    } catch (error) {
+        console.error('Error al imprimir comanda en servidor:', error);
+        return res.status(500).json({ error: 'No se pudo imprimir la comanda en servidor' });
     }
 });
 
@@ -483,11 +766,14 @@ router.put('/items/:itemId/enviar', async (req, res) => {
             }
 
             const pedidoId = Number(itemRows[0].pedido_id);
+            const conf = await getEnvioCocinaConfig(connection);
+            const autoListoComanda = !!conf.auto_listo_comanda;
+            const targetEstado = autoListoComanda ? 'listo' : 'enviado';
             await connection.query(
                 `UPDATE pedido_items
-                 SET estado = 'enviado', enviado_at = NOW()
+                 SET estado = ?, enviado_at = NOW(), listo_at = CASE WHEN ? = 'listo' THEN NOW() ELSE listo_at END
                  WHERE id = ?`,
-                [itemId]
+                [targetEstado, targetEstado, itemId]
             );
 
             // Si el pedido no tenía responsable, lo tomamos del usuario actual que envía.
@@ -502,7 +788,11 @@ router.put('/items/:itemId/enviar', async (req, res) => {
 
             await connection.commit();
             connection.release();
-            res.json({ message: 'Item enviado a cocina' });
+            res.json({
+                message: autoListoComanda ? 'Item enviado e iniciado como listo' : 'Item enviado a cocina',
+                estado: targetEstado,
+                auto_listo_comanda: autoListoComanda
+            });
         } catch (err) {
             await connection.rollback();
             connection.release();
@@ -830,11 +1120,14 @@ router.put('/pedidos/:pedidoId/mover', async (req, res) => {
             if (pedidos.length === 0) throw new Error('Pedido no encontrado');
             const pedido = pedidos[0];
 
-            // Validar que el destino esté libre: sin pedidos abiertos
+            // Validar que el destino esté libre: sin items activos en pedidos abiertos
             const [abiertosDestino] = await connection.query(
-                // 'rechazado' se considera finalizado (no pedido activo)
-                // Relacionado con: estado "rechazado" (database.sql)
-                `SELECT COUNT(*) as cnt FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado','rechazado')`,
+                `SELECT COUNT(*) as cnt
+                 FROM pedido_items i
+                 JOIN pedidos p ON p.id = i.pedido_id
+                 WHERE p.mesa_id = ?
+                   AND p.estado NOT IN ('cerrado','cancelado','rechazado')
+                   AND i.estado NOT IN ('cancelado','rechazado')`,
                 [mesa_destino_id]
             );
             if ((abiertosDestino[0]?.cnt || 0) > 0) {
@@ -844,19 +1137,23 @@ router.put('/pedidos/:pedidoId/mover', async (req, res) => {
             // Actualizar estados de mesas (origen puede quedar ocupada si tuviera otros pedidos, pero por defecto quedará libre)
             await connection.query('UPDATE pedidos SET mesa_id = ? WHERE id = ?', [mesa_destino_id, pedidoId]);
 
-            // Poner libre la mesa origen si no le quedan pedidos abiertos
+            // Poner libre la mesa origen si no le quedan items activos
             const [restantesOrigen] = await connection.query(
-                // 'rechazado' se considera finalizado (no pedido activo)
-                // Relacionado con: estado "rechazado" (database.sql)
-                `SELECT COUNT(*) as cnt FROM pedidos WHERE mesa_id = ? AND estado NOT IN ('cerrado','cancelado','rechazado')`,
+                `SELECT COUNT(*) as cnt
+                 FROM pedido_items i
+                 JOIN pedidos p ON p.id = i.pedido_id
+                 WHERE p.mesa_id = ?
+                   AND p.estado NOT IN ('cerrado','cancelado','rechazado')
+                   AND i.estado NOT IN ('cancelado','rechazado')`,
                 [pedido.mesa_id]
             );
             if ((restantesOrigen[0]?.cnt || 0) === 0) {
                 await connection.query('UPDATE mesas SET estado = "libre" WHERE id = ?', [pedido.mesa_id]);
             }
 
-            // Poner ocupada la mesa destino
-            await connection.query('UPDATE mesas SET estado = "ocupada" WHERE id = ?', [mesa_destino_id]);
+            // Recalcular estado de ambas mesas según items activos reales.
+            await syncMesaEstadoByItems(connection, pedido.mesa_id);
+            await syncMesaEstadoByItems(connection, mesa_destino_id);
 
             await connection.commit();
             connection.release();

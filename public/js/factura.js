@@ -633,7 +633,7 @@ $(document).ready(function() {
                 method: 'POST',
                 data: JSON.stringify(factura),
                 contentType: 'application/json',
-                success: function(response) {
+                success: async function(response) {
                     Swal.close();
                     console.log('Factura generada exitosamente:', response);
                     
@@ -646,14 +646,31 @@ $(document).ready(function() {
                             localStorage.removeItem('pedidoActualId');
                         }
 
-                        // Mostrar la factura
-                        const facturaModal = new bootstrap.Modal(document.getElementById('facturaModal'));
-                    // embed=1 para ocultar el botón "Volver" dentro del iframe (solo dejamos imprimir)
-                    // Relacionado con: routes/facturas.js y views/factura.ejs
-                    const iframeUrl = `/api/facturas/${response.id}/imprimir?embed=1`;
-                        console.log('URL del iframe:', iframeUrl);
-                        $('#facturaFrame').attr('src', iframeUrl);
-                        facturaModal.show();
+                        // Si está activo "factura en servidor", no abrimos modal de impresión en navegador.
+                        try {
+                            const cfgResp = await fetch('/api/facturas/config/impresion');
+                            const cfg = await cfgResp.json().catch(() => ({}));
+                            if (cfg && cfg.factura_imprime_servidor) {
+                                const pResp = await fetch(`/api/facturas/${encodeURIComponent(response.id)}/imprimir-servidor`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' }
+                                });
+                                const pData = await pResp.json().catch(() => ({}));
+                                if (!pResp.ok) throw new Error(pData.error || 'No se pudo imprimir factura en servidor');
+                                mostrarAlerta('success', `Factura impresa en servidor (${pData.copias || 1} copia/s)`);
+                            } else {
+                                // Mostrar la factura en iframe (modo navegador)
+                                const facturaModal = new bootstrap.Modal(document.getElementById('facturaModal'));
+                                // embed=1 para ocultar el botón "Volver" dentro del iframe (solo dejamos imprimir)
+                                const iframeUrl = `/api/facturas/${response.id}/imprimir?embed=1`;
+                                console.log('URL del iframe:', iframeUrl);
+                                $('#facturaFrame').attr('src', iframeUrl);
+                                facturaModal.show();
+                            }
+                        } catch (printErr) {
+                            console.error('Error en impresión de factura:', printErr);
+                            mostrarAlerta('warning', printErr.message || 'Factura creada, pero no se pudo imprimir');
+                        }
 
                         // Limpiar el formulario
                         limpiarFormulario();

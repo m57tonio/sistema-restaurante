@@ -5,6 +5,8 @@ $(function() {
   const canvas = new bootstrap.Offcanvas('#canvasPedido');
   let pedidoActual = null; // { id, mesa_id }
   let items = []; // items del pedido en UI
+  let autoListoComanda = false; // configuración global de flujo de cocina
+  let imprimeServidor = false; // impresión de comanda en PC/servidor
   // Rol actual (inyectado desde views/mesas.ejs)
   // Relacionado con: views/mesas.ejs (window.__USER_ROLE__) y server.js (protección de rutas)
   const userRole = String(window.__USER_ROLE__ || '').toLowerCase(); // administrador | mesero
@@ -324,6 +326,8 @@ $(function() {
       const data = await resp.json();
       if(!resp.ok) throw new Error(data.error||'Error al abrir pedido');
       pedidoActual = data.pedido;
+      autoListoComanda = !!data.auto_listo_comanda;
+      imprimeServidor = !!data.imprime_servidor;
       $('#pedidoMesa').text(mesaNumero);
       await cargarPedido(pedidoActual.id);
       canvas.show();
@@ -775,11 +779,47 @@ $(function() {
       if(pendientes.length === 0){
         return Swal.fire({icon:'info', title:'No hay items pendientes para enviar'});
       }
+      const itemIdsEnviados = pendientes.map(it => Number(it.id)).filter(n => Number.isFinite(n) && n > 0);
+      let printWindow = null;
+      if (autoListoComanda && !imprimeServidor) {
+        // Abrimos ventana antes de awaits para evitar bloqueo de popup por el navegador.
+        printWindow = window.open('about:blank', '_blank');
+      }
       for(const it of pendientes){
         await fetch(`/api/mesas/items/${it.id}/enviar`, { method:'PUT' });
       }
+
+      // Modo cocina sin dispositivo:
+      // - imprimir comanda automáticamente al enviar
+      if (autoListoComanda && pedidoActual && pedidoActual.id && itemIdsEnviados.length > 0) {
+        if (imprimeServidor) {
+          const rPrint = await fetch(`/api/mesas/pedidos/${encodeURIComponent(pedidoActual.id)}/comanda/imprimir-servidor`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_ids: itemIdsEnviados })
+          });
+          const dPrint = await rPrint.json().catch(() => ({}));
+          if(!rPrint.ok) throw new Error(dPrint.error || 'No se pudo imprimir en servidor');
+        } else {
+          const query = new URLSearchParams({
+            item_ids: itemIdsEnviados.join(','),
+            auto_print: '1'
+          });
+          const urlComanda = `/api/mesas/pedidos/${encodeURIComponent(pedidoActual.id)}/comanda?${query.toString()}`;
+          if (printWindow && !printWindow.closed) {
+            try { printWindow.location.href = urlComanda; } catch (_) {}
+          } else {
+            // Fallback si el popup fue bloqueado.
+            window.open(urlComanda, '_blank');
+          }
+        }
+      }
+
       await cargarPedido(pedidoActual.id);
-      Swal.fire({icon:'success', title:'Enviado a cocina'});
+      Swal.fire({
+        icon:'success',
+        title: autoListoComanda ? 'Comanda impresa y pedido en Listos' : 'Enviado a cocina'
+      });
     }catch(err){
       Swal.fire({icon:'error', title:'No se pudo enviar a cocina'});
     }
@@ -872,8 +912,22 @@ $(function() {
       });
       const data = await resp.json();
       if(!resp.ok) throw new Error(data.error||'Error al facturar');
-      // En Mesas queremos volver a /mesas (no al index) desde la vista de impresión
-      // Relacionado con: routes/facturas.js (usa return_to seguro) y views/factura.ejs (botón Volver)
+      // Si está activo "factura en servidor", no abrimos vista de navegador.
+      const cfgResp = await fetch('/api/facturas/config/impresion');
+      const cfg = await cfgResp.json().catch(() => ({}));
+      const facturaServer = !!cfg?.factura_imprime_servidor;
+      if (facturaServer) {
+        const pResp = await fetch(`/api/facturas/${encodeURIComponent(data.factura_id)}/imprimir-servidor`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const pData = await pResp.json().catch(() => ({}));
+        if (!pResp.ok) throw new Error(pData.error || 'No se pudo imprimir factura en servidor');
+        await Swal.fire({ icon:'success', title:`Factura impresa en servidor (${pData.copias || 1} copia/s)` });
+        window.location.href = '/mesas';
+        return;
+      }
+      // En Mesas queremos volver a /mesas (no al index) desde la vista de impresión.
       window.location.href = `/api/facturas/${data.factura_id}/imprimir?return_to=${encodeURIComponent('/mesas')}`;
     }catch(err){
       Swal.fire({icon:'error', title: err.message});
