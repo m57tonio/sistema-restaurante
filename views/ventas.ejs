@@ -6,6 +6,7 @@
     <title>Historial de Ventas</title>
     <link href="/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <style>
         html, body { height: 100%; }
         body { min-height: 100vh; display: flex; flex-direction: column; }
@@ -80,6 +81,20 @@
             from { transform: translateX(100%); }
             to { transform: translateX(0); }
         }
+        .kpi-card {
+            border-left: 4px solid #0d6efd;
+            background: #fff;
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+            box-shadow: 0 0.25rem 0.75rem rgba(0,0,0,.06);
+        }
+        .kpi-card.green  { border-left-color: #198754; }
+        .kpi-card.orange { border-left-color: #fd7e14; }
+        .kpi-value { font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+        .kpi-label { font-size: .78rem; color: #6c757d; text-transform: uppercase; letter-spacing: .05em; }
+        .analytics-section { margin-top: 0.5rem; }
+        .chart-card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 0.25rem 0.75rem rgba(0,0,0,.06); margin-bottom: 1.25rem; }
+        .chart-card .chart-title { font-size: .85rem; font-weight: 600; color: #495057; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .75rem; }
     </style>
 </head>
 <body>
@@ -179,6 +194,71 @@
             </div>
         </div>
     </div>
+
+    <!-- ===== SECCIÓN DE ANÁLISIS ===== -->
+    <div class="container analytics-section mb-4">
+
+        <!-- KPIs -->
+        <div class="row g-3 mb-3">
+            <div class="col-12 col-md-4">
+                <div class="kpi-card">
+                    <div class="kpi-label"><i class="bi bi-receipt me-1"></i>Total de facturas</div>
+                    <div class="kpi-value text-primary" id="kpiFacturas">—</div>
+                </div>
+            </div>
+            <div class="col-12 col-md-4">
+                <div class="kpi-card green">
+                    <div class="kpi-label"><i class="bi bi-calculator me-1"></i>Ticket promedio</div>
+                    <div class="kpi-value text-success" id="kpiTicket">—</div>
+                </div>
+            </div>
+            <div class="col-12 col-md-4">
+                <div class="kpi-card orange">
+                    <div class="kpi-label"><i class="bi bi-trophy me-1"></i>Venta más alta</div>
+                    <div class="kpi-value text-warning" id="kpiMax">—</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Top Productos + Método de Pago -->
+        <div class="row g-3 mb-3">
+            <div class="col-12 col-lg-7">
+                <div class="chart-card h-100">
+                    <div class="chart-title"><i class="bi bi-bar-chart-horizontal me-1"></i>Top productos más vendidos</div>
+                    <canvas id="chartProductos" style="max-height:260px"></canvas>
+                    <p class="text-muted small text-center mt-2 mb-0" id="noProductos" style="display:none">Sin datos para el período seleccionado.</p>
+                </div>
+            </div>
+            <div class="col-12 col-lg-5">
+                <div class="chart-card h-100">
+                    <div class="chart-title"><i class="bi bi-pie-chart me-1"></i>Distribución por método de pago</div>
+                    <canvas id="chartMetodoPago" style="max-height:260px"></canvas>
+                    <p class="text-muted small text-center mt-2 mb-0" id="noMetodo" style="display:none">Sin datos para el período seleccionado.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Días de movimiento + Horas pico -->
+        <div class="row g-3">
+            <div class="col-12 col-lg-6">
+                <div class="chart-card">
+                    <div class="chart-title"><i class="bi bi-calendar-week me-1"></i>Días de más movimiento</div>
+                    <canvas id="chartDias" style="max-height:220px"></canvas>
+                    <p class="text-muted small text-center mt-2 mb-0" id="noDias" style="display:none">Sin datos para el período seleccionado.</p>
+                </div>
+            </div>
+            <div class="col-12 col-lg-6">
+                <div class="chart-card">
+                    <div class="chart-title"><i class="bi bi-clock me-1"></i>Horas pico del día</div>
+                    <canvas id="chartHoras" style="max-height:220px"></canvas>
+                    <p class="text-muted small text-center mt-2 mb-0" id="noHoras" style="display:none">Sin datos para el período seleccionado.</p>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <!-- ===== FIN SECCIÓN DE ANÁLISIS ===== -->
+
     </main>
 
     <!-- Modal para mostrar facturas -->
@@ -414,6 +494,173 @@
 
         // Aplicar al cargar la página (ya incluye filtros por fecha/búsqueda)
         aplicarTotalesServidor();
+
+        // ===== ANALYTICS =====
+        (function initAnalytics() {
+            const analytics = <%- JSON.stringify(analytics || {}) %>;
+            const totales   = <%- JSON.stringify(totales  || {}) %>;
+
+            // --- Helpers ---
+            function fmt(n) {
+                return '$' + Number(n || 0).toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+            }
+
+            // --- KPIs ---
+            const kpis = analytics.kpis || {};
+            document.getElementById('kpiFacturas').textContent = Number(kpis.num_facturas || 0).toLocaleString('es-CO');
+            document.getElementById('kpiTicket').textContent   = fmt(kpis.ticket_promedio);
+            document.getElementById('kpiMax').textContent      = fmt(kpis.venta_maxima);
+
+            // --- Top Productos ---
+            const productos = analytics.productos || [];
+            if (productos.length === 0) {
+                document.getElementById('chartProductos').style.display = 'none';
+                document.getElementById('noProductos').style.display = 'block';
+            } else {
+                new Chart(document.getElementById('chartProductos'), {
+                    type: 'bar',
+                    data: {
+                        labels: productos.map(p => p.nombre),
+                        datasets: [{
+                            label: 'Cantidad vendida',
+                            data: productos.map(p => p.total_cantidad),
+                            backgroundColor: 'rgba(13, 110, 253, 0.75)',
+                            borderRadius: 4
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    afterLabel: (ctx) => {
+                                        const ing = productos[ctx.dataIndex]?.total_ingresos || 0;
+                                        return 'Ingresos: ' + fmt(ing);
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { beginAtZero: true, grid: { color: 'rgba(0,0,0,.05)' } },
+                            y: { grid: { display: false } }
+                        }
+                    }
+                });
+            }
+
+            // --- Método de Pago (dona) ---
+            const ef = Number(totales.efectivo || 0);
+            const tr = Number(totales.transferencia || 0);
+            const ta = Number(totales.tarjeta || 0);
+            if (ef + tr + ta === 0) {
+                document.getElementById('chartMetodoPago').style.display = 'none';
+                document.getElementById('noMetodo').style.display = 'block';
+            } else {
+                new Chart(document.getElementById('chartMetodoPago'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Efectivo', 'Transferencia', 'Tarjeta'],
+                        datasets: [{
+                            data: [ef, tr, ta],
+                            backgroundColor: ['#198754','#0d6efd','#fd7e14'],
+                            hoverOffset: 6
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: { position: 'bottom' },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => ' ' + ctx.label + ': ' + fmt(ctx.parsed)
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // --- Días de movimiento ---
+            // DAYOFWEEK MySQL: 1=Dom, 2=Lun, 3=Mar, 4=Mié, 5=Jue, 6=Vie, 7=Sáb
+            const NOMBRES_DIA = { 1:'Dom', 2:'Lun', 3:'Mar', 4:'Mié', 5:'Jue', 6:'Vie', 7:'Sáb' };
+            const ORDEN_DIA   = [2, 3, 4, 5, 6, 7, 1]; // Lun→Dom
+            const diasMap = {};
+            (analytics.dias || []).forEach(d => { diasMap[d.dia_num] = d; });
+            const diasLabels = ORDEN_DIA.map(n => NOMBRES_DIA[n]);
+            const diasData   = ORDEN_DIA.map(n => diasMap[n] ? diasMap[n].num_ventas : 0);
+            const maxDias    = Math.max(...diasData, 1);
+            const diasColors = diasData.map(v => v === maxDias && v > 0 ? 'rgba(25,135,84,.85)' : 'rgba(13,110,253,.6)');
+
+            if (diasData.every(v => v === 0)) {
+                document.getElementById('chartDias').style.display = 'none';
+                document.getElementById('noDias').style.display = 'block';
+            } else {
+                new Chart(document.getElementById('chartDias'), {
+                    type: 'bar',
+                    data: {
+                        labels: diasLabels,
+                        datasets: [{
+                            label: 'N° ventas',
+                            data: diasData,
+                            backgroundColor: diasColors,
+                            borderRadius: 4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, ticks: { stepSize: 1 }, grid: { color: 'rgba(0,0,0,.05)' } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+            }
+
+            // --- Horas pico ---
+            // Rellenar las 24 horas con 0 para horas sin datos
+            const horasMap = {};
+            (analytics.horas || []).forEach(h => { horasMap[h.hora] = h; });
+            const horasLabels = Array.from({ length: 24 }, (_, i) => i + 'h');
+            const horasData   = Array.from({ length: 24 }, (_, i) => horasMap[i] ? horasMap[i].num_ventas : 0);
+            const maxHora     = Math.max(...horasData, 1);
+            // Destacar las 3 horas con más actividad
+            const top3 = [...horasData]
+                .map((v, i) => ({ v, i }))
+                .sort((a, b) => b.v - a.v)
+                .slice(0, 3)
+                .filter(x => x.v > 0)
+                .map(x => x.i);
+            const horasColors = horasData.map((_, i) => top3.includes(i) ? 'rgba(253,126,20,.85)' : 'rgba(13,110,253,.45)');
+
+            if (horasData.every(v => v === 0)) {
+                document.getElementById('chartHoras').style.display = 'none';
+                document.getElementById('noHoras').style.display = 'block';
+            } else {
+                new Chart(document.getElementById('chartHoras'), {
+                    type: 'bar',
+                    data: {
+                        labels: horasLabels,
+                        datasets: [{
+                            label: 'N° ventas',
+                            data: horasData,
+                            backgroundColor: horasColors,
+                            borderRadius: 3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, ticks: { stepSize: 1 }, grid: { color: 'rgba(0,0,0,.05)' } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+            }
+        })();
 
         // Manejador para reimprimir facturas y ver detalles
         document.querySelectorAll('.btn-reimprimir').forEach(button => {

@@ -105,6 +105,96 @@ async function getTotalesPorMetodo(queryParams) {
     return totales;
 }
 
+async function getProductosMasVendidos(queryParams) {
+    const { whereSql, params } = buildVentasWhere(queryParams);
+    const sql = `
+        SELECT p.nombre,
+               SUM(df.cantidad) AS total_cantidad,
+               SUM(df.subtotal) AS total_ingresos
+        FROM detalle_factura df
+        JOIN facturas  f ON f.id = df.factura_id
+        JOIN clientes  c ON f.cliente_id = c.id
+        JOIN productos p ON p.id = df.producto_id
+        ${whereSql}
+        GROUP BY p.id, p.nombre
+        ORDER BY total_cantidad DESC
+        LIMIT 10
+    `;
+    try {
+        const [rows] = await db.query(sql, params);
+        return (rows || []).map(r => ({
+            nombre: r.nombre,
+            total_cantidad: Number(r.total_cantidad || 0),
+            total_ingresos: Number(r.total_ingresos || 0)
+        }));
+    } catch (_) { return []; }
+}
+
+async function getDiasMasMovimiento(queryParams) {
+    const { whereSql, params } = buildVentasWhere(queryParams);
+    const sql = `
+        SELECT DAYOFWEEK(f.fecha) AS dia_num,
+               COUNT(*)            AS num_ventas,
+               SUM(f.total)        AS total_ventas
+        FROM facturas f
+        JOIN clientes c ON f.cliente_id = c.id
+        ${whereSql}
+        GROUP BY DAYOFWEEK(f.fecha)
+        ORDER BY dia_num
+    `;
+    try {
+        const [rows] = await db.query(sql, params);
+        return (rows || []).map(r => ({
+            dia_num: Number(r.dia_num),
+            num_ventas: Number(r.num_ventas || 0),
+            total_ventas: Number(r.total_ventas || 0)
+        }));
+    } catch (_) { return []; }
+}
+
+async function getHorasPico(queryParams) {
+    const { whereSql, params } = buildVentasWhere(queryParams);
+    const sql = `
+        SELECT HOUR(f.fecha) AS hora,
+               COUNT(*)       AS num_ventas,
+               SUM(f.total)   AS total_ventas
+        FROM facturas f
+        JOIN clientes c ON f.cliente_id = c.id
+        ${whereSql}
+        GROUP BY HOUR(f.fecha)
+        ORDER BY hora
+    `;
+    try {
+        const [rows] = await db.query(sql, params);
+        return (rows || []).map(r => ({
+            hora: Number(r.hora),
+            num_ventas: Number(r.num_ventas || 0),
+            total_ventas: Number(r.total_ventas || 0)
+        }));
+    } catch (_) { return []; }
+}
+
+async function getKPIs(queryParams) {
+    const { whereSql, params } = buildVentasWhere(queryParams);
+    const sql = `
+        SELECT COUNT(*)     AS num_facturas,
+               AVG(f.total) AS ticket_promedio,
+               MAX(f.total) AS venta_maxima
+        FROM facturas f
+        JOIN clientes c ON f.cliente_id = c.id
+        ${whereSql}
+    `;
+    try {
+        const [rows] = await db.query(sql, params);
+        const r = (rows && rows[0]) ? rows[0] : {};
+        return {
+            num_facturas:    Number(r.num_facturas   || 0),
+            ticket_promedio: Number(r.ticket_promedio|| 0),
+            venta_maxima:    Number(r.venta_maxima   || 0)
+        };
+    } catch (_) { return { num_facturas: 0, ticket_promedio: 0, venta_maxima: 0 }; }
+}
+
 // Ruta principal de ventas con filtros opcionales por fecha
 router.get('/', async (req, res) => {
     try {
@@ -118,8 +208,15 @@ router.get('/', async (req, res) => {
         `;
 
         const [ventas] = await db.query(query, params);
-        const totales = await getTotalesPorMetodo(req.query);
-        res.render('ventas', { ventas, totales });
+        const [totales, productos, dias, horas, kpis] = await Promise.all([
+            getTotalesPorMetodo(req.query),
+            getProductosMasVendidos(req.query),
+            getDiasMasMovimiento(req.query),
+            getHorasPico(req.query),
+            getKPIs(req.query)
+        ]);
+        const analytics = { productos, dias, horas, kpis };
+        res.render('ventas', { ventas, totales, analytics });
     } catch (error) {
         console.error('Error al obtener ventas:', error);
         res.status(500).send('Error al cargar el historial de ventas');
