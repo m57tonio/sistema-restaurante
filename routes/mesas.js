@@ -1085,7 +1085,7 @@ router.post('/pedidos/:pedidoId/facturar', async (req, res) => {
                         monto: Number(p.monto || 0),
                         referencia: (p.referencia != null && String(p.referencia).trim() !== '') ? String(p.referencia).trim() : null
                     }))
-                    .filter(p => ['efectivo', 'transferencia', 'tarjeta'].includes(p.metodo) && Number.isFinite(p.monto) && p.monto > 0);
+                    .filter(p => ['efectivo', 'transferencia', 'tarjeta', 'qr'].includes(p.metodo) && Number.isFinite(p.monto) && p.monto > 0);
             };
             const pagosNorm = normalizarPagos(pagos);
             const sumaPagos = pagosNorm.reduce((acc, p) => acc + Number(p.monto || 0), 0);
@@ -1099,7 +1099,7 @@ router.post('/pedidos/:pedidoId/facturar', async (req, res) => {
                 formaPagoDB = (pagosNorm.length === 1) ? pagosNorm[0].metodo : 'mixto';
             } else {
                 // Compatibilidad: si no envían pagos, usamos forma_pago (y creamos 1 registro en factura_pagos)
-                if (!['efectivo', 'transferencia', 'tarjeta', 'mixto'].includes(formaPagoDB)) formaPagoDB = 'efectivo';
+                if (!['efectivo', 'transferencia', 'tarjeta', 'qr', 'mixto'].includes(formaPagoDB)) formaPagoDB = 'efectivo';
             }
 
             const [facturaInsert] = await connection.query(

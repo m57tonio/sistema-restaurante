@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS facturas (
     fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     total DECIMAL(10,2) NOT NULL,
     -- forma_pago se mantiene por compatibilidad (reportes/ventas), pero si hay varios pagos se guarda como 'mixto'
-    forma_pago ENUM('efectivo', 'transferencia', 'tarjeta', 'mixto') NOT NULL DEFAULT 'efectivo',
+    forma_pago ENUM('efectivo', 'transferencia', 'tarjeta', 'qr', 'mixto') NOT NULL DEFAULT 'efectivo',
     FOREIGN KEY (cliente_id) REFERENCES clientes(id)
 );
 
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS facturas (
 CREATE TABLE IF NOT EXISTS factura_pagos (
     id INT AUTO_INCREMENT PRIMARY KEY,
     factura_id INT NOT NULL,
-    metodo ENUM('efectivo', 'transferencia', 'tarjeta') NOT NULL,
+    metodo ENUM('efectivo', 'transferencia', 'tarjeta', 'qr') NOT NULL,
     monto DECIMAL(10,2) NOT NULL,
     referencia VARCHAR(100) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -213,15 +213,19 @@ CREATE TABLE IF NOT EXISTS pedido_items (
 -- Ejecuta estos ALTER/CREATE en tu base ya existente para habilitar pago mixto.
 -- ===========================
 
--- 1) Agregar métodos extra al ENUM de facturas.forma_pago (incluye 'tarjeta' y 'mixto')
+-- 1) Agregar métodos extra al ENUM de facturas.forma_pago (incluye 'tarjeta', 'qr' y 'mixto')
 ALTER TABLE facturas
-    MODIFY forma_pago ENUM('efectivo','transferencia','tarjeta','mixto') NOT NULL DEFAULT 'efectivo';
+    MODIFY forma_pago ENUM('efectivo','transferencia','tarjeta','qr','mixto') NOT NULL DEFAULT 'efectivo';
+
+-- 1.1) Agregar 'qr' al ENUM de factura_pagos.metodo
+ALTER TABLE factura_pagos
+    MODIFY metodo ENUM('efectivo','transferencia','tarjeta','qr') NOT NULL;
 
 -- 2) Crear tabla de pagos por factura (si aún no existe)
 CREATE TABLE IF NOT EXISTS factura_pagos (
     id INT AUTO_INCREMENT PRIMARY KEY,
     factura_id INT NOT NULL,
-    metodo ENUM('efectivo', 'transferencia', 'tarjeta') NOT NULL,
+    metodo ENUM('efectivo', 'transferencia', 'tarjeta', 'qr') NOT NULL,
     monto DECIMAL(10,2) NOT NULL,
     referencia VARCHAR(100) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

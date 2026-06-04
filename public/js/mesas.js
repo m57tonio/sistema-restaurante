@@ -101,6 +101,7 @@ $(function() {
                   <option value="efectivo">Efectivo</option>
                   <option value="transferencia">Transferencia</option>
                   <option value="tarjeta">Tarjeta</option>
+                  <option value="qr">QR</option>
                 </select>
               </div>
               <div class="col-4">

@@ -22,12 +22,12 @@ const pool = mysql.createPool({
  */
 async function ensureSchema() {
     try {
-        // Tabla de pagos por factura (pago mixto)
+        // Tabla de pagos por factura (pago mixto) — con soporte para QR
         await pool.query(`
             CREATE TABLE IF NOT EXISTS factura_pagos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 factura_id INT NOT NULL,
-                metodo ENUM('efectivo', 'transferencia', 'tarjeta') NOT NULL,
+                metodo ENUM('efectivo', 'transferencia', 'tarjeta', 'qr') NOT NULL,
                 monto DECIMAL(10,2) NOT NULL,
                 referencia VARCHAR(100) NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -35,8 +35,8 @@ async function ensureSchema() {
             )
         `);
 
-        // Asegurar que el ENUM incluya tarjeta/mixto (si ya existe la tabla, CREATE TABLE no lo altera)
-        const [rows] = await pool.query(
+        // Migrar facturas.forma_pago: asegurar que incluya tarjeta, qr y mixto
+        const [rowsFP] = await pool.query(
             `SELECT COLUMN_TYPE
              FROM INFORMATION_SCHEMA.COLUMNS
              WHERE TABLE_SCHEMA = DATABASE()
@@ -44,15 +44,28 @@ async function ensureSchema() {
                AND COLUMN_NAME = 'forma_pago'
              LIMIT 1`
         );
-
-        const columnType = rows?.[0]?.COLUMN_TYPE || '';
-        const needsTarjeta = !columnType.includes("'tarjeta'");
-        const needsMixto = !columnType.includes("'mixto'");
-
-        if (columnType && (needsTarjeta || needsMixto)) {
+        const fpType = rowsFP?.[0]?.COLUMN_TYPE || '';
+        if (fpType && (!fpType.includes("'tarjeta'") || !fpType.includes("'qr'") || !fpType.includes("'mixto'"))) {
             await pool.query(
                 `ALTER TABLE facturas
-                 MODIFY forma_pago ENUM('efectivo','transferencia','tarjeta','mixto') NOT NULL DEFAULT 'efectivo'`
+                 MODIFY forma_pago ENUM('efectivo','transferencia','tarjeta','qr','mixto') NOT NULL DEFAULT 'efectivo'`
+            );
+        }
+
+        // Migrar factura_pagos.metodo: asegurar que incluya qr
+        const [rowsMP] = await pool.query(
+            `SELECT COLUMN_TYPE
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'factura_pagos'
+               AND COLUMN_NAME = 'metodo'
+             LIMIT 1`
+        );
+        const mpType = rowsMP?.[0]?.COLUMN_TYPE || '';
+        if (mpType && !mpType.includes("'qr'")) {
+            await pool.query(
+                `ALTER TABLE factura_pagos
+                 MODIFY metodo ENUM('efectivo','transferencia','tarjeta','qr') NOT NULL`
             );
         }
     } catch (err) {
