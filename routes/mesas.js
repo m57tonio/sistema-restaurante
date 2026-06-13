@@ -119,8 +119,9 @@ function execCommand(command) {
 function buildThermalPsScript(psPath, psPrinter, anchoMm, fontSize) {
     // 1 pulgada = 25.4 mm. PaperSize trabaja en centésimas de pulgada.
     const widthH = Math.round(Number(anchoMm || 80) * 100 / 25.4);
-    // Fuente monoespaciada; tamaño depende de config (1=8.5pt normal, 2=10pt grande)
-    const pt = Number(fontSize || 1) === 2 ? '10' : '8.5';
+    // Fuente monoespaciada en negrita; tamaño depende de config (1=10pt normal, 2=12pt grande).
+    // Bold mejora la legibilidad en papel térmico de cocina (trazo más oscuro y grueso).
+    const pt = Number(fontSize || 1) === 2 ? '12' : '10';
 
     const lines = [
         'Add-Type -AssemblyName System.Drawing',
@@ -135,7 +136,8 @@ function buildThermalPsScript(psPath, psPrinter, anchoMm, fontSize) {
         '$ps = New-Object System.Drawing.Printing.PaperSize("ThermalTicket", ' + widthH + ', 2000)',
         '$pd.DefaultPageSettings.PaperSize = $ps',
         '$pd.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(10, 10, 10, 0)',
-        '$script:fn = New-Object System.Drawing.Font("Courier New", ' + pt + ')',
+        // FontStyle::Bold → trazo más grueso y oscuro en papel térmico de cocina
+        '$script:fn = New-Object System.Drawing.Font("Courier New", ' + pt + ', [System.Drawing.FontStyle]::Bold)',
         '$pd.add_PrintPage({',
         '    param($s, $e)',
         '    $y = [float]0',

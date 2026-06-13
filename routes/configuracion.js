@@ -238,7 +238,8 @@ function execCommand(command) {
 // Misma lógica que buildThermalPsScript en routes/mesas.js y routes/facturas.js
 function buildThermalPsScript(psPath, psPrinter, anchoMm, fontSize) {
     const widthH = Math.round(Number(anchoMm || 80) * 100 / 25.4);
-    const pt     = Number(fontSize || 1) === 2 ? '10' : '8.5';
+    // Bold + tamaño mayor para comanda de prueba → misma mejora que en routes/mesas.js
+    const pt     = Number(fontSize || 1) === 2 ? '12' : '10';
     const lines  = [
         'Add-Type -AssemblyName System.Drawing',
         "$script:ls = [System.IO.File]::ReadAllLines('" + psPath + "', [System.Text.Encoding]::UTF8)",
@@ -250,7 +251,7 @@ function buildThermalPsScript(psPath, psPrinter, anchoMm, fontSize) {
         '$ps = New-Object System.Drawing.Printing.PaperSize("ThermalTicket", ' + widthH + ', 2000)',
         '$pd.DefaultPageSettings.PaperSize = $ps',
         '$pd.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(10, 10, 10, 0)',
-        '$script:fn = New-Object System.Drawing.Font("Courier New", ' + pt + ')',
+        '$script:fn = New-Object System.Drawing.Font("Courier New", ' + pt + ', [System.Drawing.FontStyle]::Bold)',
         '$pd.add_PrintPage({',
         '    param($s, $e)',
         '    $y = [float]0',
